@@ -1,0 +1,36 @@
+{
+  "$comment": "Effort → model mapping per engine (docs/PLAN.md 6.3). Starting values. The anthropic_api model IDs are placeholders until M3, where they are verified against Anthropic's models page.",
+  "anthropic_api": {
+    "low": {
+      "model": "<current Haiku model ID>",
+      "max_tokens": 400,
+      "tool_budget": 3,
+      "web_search_max_uses": 1
+    },
+    "medium": {
+      "model": "<current Sonnet model ID>",
+      "max_tokens": 1200,
+      "tool_budget": 6,
+      "web_search_max_uses": 3
+    },
+    "high": {
+      "model": "<current Opus model ID>",
+      "max_tokens": 2500,
+      "tool_budget": 10,
+      "web_search_max_uses": 5
+    },
+    "max": {
+      "model": "<current Opus model ID>",
+      "max_tokens": 4000,
+      "tool_budget": 15,
+      "web_search_max_uses": 8,
+      "thinking": true
+    }
+  },
+  "claude_code": {
+    "low": { "model": "haiku", "max_turns": 4 },
+    "medium": { "model": "sonnet", "effort": "medium", "max_turns": 8 },
+    "high": { "model": "opus", "effort": "high", "max_turns": 12 },
+    "max": { "model": "opus", "effort": "max", "max_turns": 20 }
+  }
+}

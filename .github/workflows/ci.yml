@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS · lint, test, build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+
+      - name: JS lint and format
+        run: npm run lint && npm run format:check
+
+      - name: JS typecheck
+        run: npm run typecheck
+
+      - name: JS tests
+        run: npm test
+
+      - name: Rust format
+        run: cargo fmt --all --check
+
+      - name: Rust lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test
+
+      - name: Build the app bundle
+        run: npm run build -- --bundles app
+
+  windows:
+    # Windows is a post-MVP target, but its platform stubs must keep compiling.
+    name: Windows · Rust compiles
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Rust lint
+        run: cargo clippy --all-targets -- -D warnings

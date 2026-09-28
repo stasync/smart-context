@@ -1,0 +1,20 @@
+[package]
+name = "context-desktop"
+version = "0.1.0"
+description = "Context: point at anything on screen and get a short explanation."
+edition = "2024"
+publish = false
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name,
+# which matters on Windows (https://github.com/rust-lang/cargo/issues/8519).
+name = "context_desktop_lib"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = ["tray-icon"] }
+
+[dev-dependencies]
+serde_json = "1.0.151"

@@ -1,0 +1,28 @@
+{
+  "name": "context-vscode",
+  "displayName": "Context",
+  "description": "Shares the visible editor state with the Context desktop app, so it can explain code in the context of your project.",
+  "private": true,
+  "version": "0.1.0",
+  "publisher": "context-dev",
+  "engines": {
+    "vscode": "^1.110.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/vscode": "~1.110.0",
+    "vitest": "^5.0.2"
+  }
+}

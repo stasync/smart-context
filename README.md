@@ -1,0 +1,47 @@
+# Context
+
+Point at anything on your screen and get a short explanation of what it is and why it's there.
+
+Hold a hotkey, aim a lens at a word, a button, a product photo or a line of code, and release. A small popover next to the cursor explains it in the context of where you are. In VS Code it reads your project, so pointing at `"express"` in `package.json` tells you what Express does *in this project* and which files use it.
+
+- **No backend, no telemetry.** Context talks only to the AI you choose: your own Claude API key, or your own Claude Code install.
+- **Reads the real source**, not just pixels: accessibility text, the page URL, your project's files.
+- **Open source.** macOS first; Windows next.
+
+> Status: early development (milestone M0, the app skeleton). The full plan is in [docs/PLAN.md](docs/PLAN.md).
+
+## Run in development
+
+Requirements:
+
+- macOS 14 or later
+- Xcode Command Line Tools: `xcode-select --install`
+- Rust (via [rustup](https://rustup.rs)); the version is pinned in `rust-toolchain.toml`
+- Node.js 22 or later
+
+```sh
+npm install
+npm run dev
+```
+
+The app lives in the menu bar (look for the ◉ icon). Dev builds also open the Settings window on launch.
+
+## Checks
+
+```sh
+npm run lint && npm run format:check && npm run typecheck && npm test
+cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
+```
+
+## Repository layout
+
+| Path | What's there |
+| --- | --- |
+| `apps/desktop/src` | React + TypeScript UI (settings now; lens and popover later) |
+| `apps/desktop/src-tauri` | Rust core: tray, windows, and the modules from the plan |
+| `extensions/vscode` | VS Code extension that shares editor state with the app |
+| `config` | Effort → model mapping and source-classifier rules |
+| `eval` | Saved context packs and expectations |
+| `docs/PLAN.md` | Product and build plan |
+
+Contributors and coding agents: read [CLAUDE.md](CLAUDE.md) first.

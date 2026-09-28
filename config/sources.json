@@ -1,0 +1,33 @@
+{
+  "$comment": "Source classifier rules (docs/PLAN.md 4.5). Bundle IDs are unverified until M2. Still to add with verified IDs: VS Code Insiders, Cursor, JetBrains IDEs, Xcode, Warp, Ghostty.",
+  "code_editors": [
+    "com.microsoft.VSCode",
+    "com.apple.Terminal",
+    "com.googlecode.iterm2"
+  ],
+  "browsers": [
+    "com.apple.Safari",
+    "com.google.Chrome",
+    "company.thebrowser.Browser",
+    "com.microsoft.edgemac",
+    "com.brave.Browser",
+    "org.mozilla.firefox"
+  ],
+  "hosts": {
+    "shopping": [
+      "amazon.*",
+      "ebay.*",
+      "aliexpress.com",
+      "etsy.com",
+      "walmart.com",
+      "noon.com"
+    ],
+    "work_tool": [
+      "*.atlassian.net",
+      "linear.app",
+      "github.com",
+      "gitlab.com",
+      "notion.so"
+    ]
+  }
+}

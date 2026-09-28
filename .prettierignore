@@ -1,0 +1,7 @@
+dist/
+target/
+node_modules/
+package-lock.json
+apps/desktop/src-tauri/gen/
+# Markdown stays hand-formatted (wide tables in docs/PLAN.md).
+*.md
