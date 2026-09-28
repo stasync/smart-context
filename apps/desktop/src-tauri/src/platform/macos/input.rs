@@ -207,10 +207,18 @@ impl Tap {
             CGEventType::LeftMouseDown
             | CGEventType::RightMouseDown
             | CGEventType::OtherMouseDown => Some(InputEvent::MouseDown),
-            CGEventType::ScrollWheel => Some(InputEvent::Scroll {
-                delta: field(CGEventField::ScrollWheelEventPointDeltaAxis1) as f64,
-                shift: flags & CGEventFlags::MaskShift.bits() != 0,
-            }),
+            CGEventType::ScrollWheel => {
+                let shift = flags & CGEventFlags::MaskShift.bits() != 0;
+                let mut delta = field(CGEventField::ScrollWheelEventPointDeltaAxis1);
+                // macOS turns Shift+wheel into horizontal scrolling on mice.
+                if shift && delta == 0 {
+                    delta = field(CGEventField::ScrollWheelEventPointDeltaAxis2);
+                }
+                Some(InputEvent::Scroll {
+                    delta: delta as f64,
+                    shift,
+                })
+            }
             _ => None,
         }
     }

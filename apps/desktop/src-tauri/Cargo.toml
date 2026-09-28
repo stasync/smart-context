@@ -14,19 +14,27 @@ name = "context_desktop_lib"
 tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
+base64 = "0.23.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 log = "0.4.34"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tauri = { version = "2.12", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-log = "2.10"
+uuid = { version = "1.26.1", features = ["serde", "v4"] }
 
 [dev-dependencies]
-serde_json = "1.0.151"
+tempfile = "3.27.0"
 
 # Versions match the objc2 crates Tauri already uses.
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
 objc2 = "0.6.4"
 objc2-app-kit = "0.3.2"
 objc2-application-services = "0.3.2"
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
 objc2-foundation = "0.3.2"
+objc2-screen-capture-kit = "0.3.2"
+tauri-nspanel = "2.1.0"

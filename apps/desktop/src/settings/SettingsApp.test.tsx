@@ -7,6 +7,7 @@ vi.mock("../shared/ipc", () => ({
     Promise.resolve({ accessibility: false, screenRecording: false }),
   ),
   requestPermission: vi.fn(() => Promise.resolve()),
+  openViewer: vi.fn(() => Promise.resolve()),
 }));
 
 describe("SettingsApp", () => {

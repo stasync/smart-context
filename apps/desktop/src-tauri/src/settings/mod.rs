@@ -20,6 +20,8 @@ const DEFAULT_EXCLUDED_APPS: &[&str] = &[
 pub struct Settings {
     /// Bundle IDs of apps where pointing is off.
     pub excluded_apps: Vec<String>,
+    /// Save every context pack for replay, and offer the capture viewer.
+    pub dev_mode: bool,
 }
 
 impl Default for Settings {
@@ -29,6 +31,7 @@ impl Default for Settings {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            dev_mode: cfg!(debug_assertions),
         }
     }
 }

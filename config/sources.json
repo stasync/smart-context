@@ -1,9 +1,15 @@
 {
-  "$comment": "Source classifier rules (docs/PLAN.md 4.5). Bundle IDs are unverified until M2. Still to add with verified IDs: VS Code Insiders, Cursor, JetBrains IDEs, Xcode, Warp, Ghostty.",
+  "$comment": "Source classifier rules (docs/PLAN.md 4.5). Bundle IDs checked on 28 Sep 2026 (installed apps and Homebrew casks). A trailing .* matches any bundle ID with that prefix. Host patterns: *.example.com matches subdomains, name.* matches the name under any domain ending (amazon.co.uk), anything else matches the host and its subdomains.",
   "code_editors": [
     "com.microsoft.VSCode",
+    "com.microsoft.VSCodeInsiders",
+    "com.todesktop.230313mzl4w4u92",
+    "com.jetbrains.*",
+    "com.apple.dt.Xcode",
     "com.apple.Terminal",
-    "com.googlecode.iterm2"
+    "com.googlecode.iterm2",
+    "dev.warp.Warp-Stable",
+    "com.mitchellh.ghostty"
   ],
   "browsers": [
     "com.apple.Safari",

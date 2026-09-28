@@ -106,6 +106,7 @@ The default question is always "what is this, and why is it here?" Pointing is e
   - Answer language (default: the system language).
   - Dev mode, which auto-saves context packs for replay.
 - Menu bar (tray) icon: enable/disable, settings, quit. No Dock icon.
+- A crowded menu bar hides the icon behind the notch, so opening Context again (Finder, Spotlight, `open -a Context`) also shows Settings. Dev builds open Settings at launch, and its Development section opens the capture viewer.
 
 ---
 
@@ -134,8 +135,7 @@ pub struct ContextPack {
     pub cursor: Point,               // global screen coords, points
     pub lens: Rect,                  // global screen coords, points
     pub display_scale: f64,
-    pub app: AppInfo,                // name, bundle_id, pid
-    pub window: WindowInfo,          // title, bounds
+    pub window: Option<WindowInfo>,  // title, bounds, and its app (name, bundle_id, pid)
     pub url: Option<String>,         // browsers only
     pub selection: Option<String>,   // AXSelectedText, capped
     pub focus: ElementInfo,          // element under cursor (role, subrole, title, value, description, bounds)
@@ -144,7 +144,7 @@ pub struct ContextPack {
     pub lens_image: ImageData,       // crop at native resolution, long edge ≤ 1024 px (starting value)
     pub window_image: ImageData,     // downscaled, lens outlined + cursor marker
     pub source: SourceHint,          // CodeEditor | Shopping | WorkTool | WebPage | OtherApp
-    pub workspace: Option<Workspace>,// from the VS Code bridge: root(s), active file, visible text, selections
+    pub workspace: Option<Workspace>,// M4: from the VS Code bridge: root(s), active file, visible text, selections
 }
 ```
 
@@ -155,8 +155,9 @@ The pack is serializable (JSON + image files) so it can be saved and replayed (s
 - Get the element at the cursor with `AXUIElementCreateSystemWide` + `AXUIElementCopyElementAtPosition`.
 - Read these attributes: `AXRole`, `AXSubrole`, `AXRoleDescription`, `AXTitle`, `AXValue` (truncated), `AXDescription`, `AXHelp`, `AXPosition`, `AXSize`, `AXSelectedText`.
 - Walk `AXParent` up to 5 levels.
-- Nearby text: collect text from elements whose frames intersect the lens. Keep the traversal bounded (starting values: 300 nodes, 150 ms).
-- Browser URL: find the `AXWebArea` ancestor and read `AXURL`. Fall back to the window title.
+- Nearby text: hit-test a grid of points inside the lens (a row about every 12 pt, 4 columns, nearest the cursor first), then join the distinct elements' text in reading order. Bounded (starting values: 60 samples, 150 ms). Walking the tree down from an ancestor instead spent the whole budget on off-screen content in long documents (tested in VS Code, 28 Sep 2026).
+- Browser URL: find the `AXWebArea` ancestor and read `AXURL`, for browsers only: other apps' web views (VS Code's, for one) carry internal URLs. The window title stays in the pack either way.
+- Side effects: `AXManualAccessibility` makes VS Code think a screen reader is running (it offers "Screen Reader Optimized" mode). See section 14. Chrome builds its tree after `AXEnhancedUserInterface` is set, so the first capture in a freshly started Chrome can be shallow.
 - Chromium and Electron apps (Chrome, VS Code, Slack) only expose a full tree once asked. Set `AXManualAccessibility = true` (Electron) or `AXEnhancedUserInterface = true` (Chrome) on the app element, once per process. **Verify** the side effects: `AXEnhancedUserInterface` is known to cause window-animation glitches in some apps, so prefer `AXManualAccessibility` where it works.
 - Set `AXUIElementSetMessagingTimeout` (starting value 0.25 s) so a hung app can't block Context.
 - Coordinates: AX uses global top-left points, while screenshots are in pixels. Handle Retina scale and multiple displays carefully.
@@ -166,8 +167,9 @@ The pack is serializable (JSON + image files) so it can be saved and replayed (s
 - Use ScreenCaptureKit (`SCScreenshotManager`, macOS 14+). `CGWindowListCreateImage` is deprecated. Candidate crates: `screencapturekit`, `xcap` (**Verify**).
 - Exclude Context's own lens and popover windows from capture (content filter).
 - Lens crop: native resolution, long edge ≤ 1024 px (starting value).
+- ScreenCaptureKit captures both images at their final size (`SCStreamConfiguration` width/height), scaling on the GPU. Resizing afterwards with the `image` crate took over 4 s per capture in dev builds, because its generic code compiles unoptimized into this crate.
 - Window image:
-  - Downscale to the maximum size Anthropic's vision docs recommend (about 1568 px on the long edge; **Verify**).
+  - Downscale to fit the smallest vision limit of the supported models: long edge ≤ 1568 px and ≤ 1.15 megapixels. Checked 28 Sep 2026 in Anthropic's vision docs: the standard tier (including the Haiku used for Low effort) downsizes past 1568 px or 1568 visual tokens of 28×28 px; Claude 4.7 and later allow 2576 px.
   - JPEG quality ~80.
   - Draw the lens rectangle (2 px, high-contrast) and a small cursor marker on it.
 - Minimum macOS version: 14 (Sonoma).
@@ -301,7 +303,7 @@ The root is a Cargo workspace from M0, so the eval runner can join it as `crates
 | Module | Owns |
 | --- | --- |
 | `platform` | Everything OS-specific: global input hooks, accessibility queries, screen capture, overlay window behavior, opening System Settings panes |
-| `pointing` | The hold-to-point gesture (a pure state machine), lens geometry, and the session that drives the lens overlay and, on release, the capture |
+| `pointing` | The hold-to-point gesture (a pure state machine), lens geometry and Shift+scroll stepping, and the session: a lens thread that drives the overlay, and an inspector thread that does all accessibility and screenshot work, one job at a time |
 | `context` | Turning a capture into a ContextPack: text caps, image scaling and annotation, source classification |
 | `orchestrator` | One conversation per popover: effort level, message history, tool loop, budgets, streaming events to the UI, cancellation (Esc closes → cancel request) |
 | `engines` | The vendor-neutral Engine trait and its adapters. No UI or platform code. |
@@ -335,17 +337,13 @@ pub trait Overlay {           // the lens window: click-through, all Spaces, abo
     fn hide_overlay(&self, window: &WebviewWindow) -> Result<()>;
 }
 
-pub trait Accessibility {
-    fn element_at(&self, p: Point) -> Result<ElementInfo>;
-    fn ancestors(&self, el: &ElementRef, max: usize) -> Result<Vec<ElementInfo>>;
-    fn text_in_rect(&self, window: &WindowRef, r: Rect, budget: Budget) -> Result<String>;
-    fn frontmost(&self) -> Result<(AppInfo, WindowInfo, Option<String /*url*/>)>;
-    fn selection(&self) -> Result<Option<String>>;
+pub trait Accessibility {     // one call per hit test or question, so no element handles cross threads
+    fn inspect(&self, app: &AppInfo, p: Point, options: &InspectOptions) -> Result<Inspection>;
+    // Inspection: element chain (leaf first), nearby text, selection, URL
 }
 
-pub trait ScreenCapture {
-    fn window_image(&self, w: &WindowInfo) -> Result<Image>;
-    fn region_image(&self, r: Rect) -> Result<Image>;
+pub trait ScreenCapture {     // both images at once, already scaled to their limits
+    fn screenshots(&self, window: Option<&WindowInfo>, lens: Rect, limits: ShotLimits) -> Result<Screenshots>;
 }
 
 pub trait Permissions {
@@ -372,6 +370,7 @@ Threading:
 ### 5.5 Windows (the Tauri kind)
 
 - **lens:**
+  - A non-activating `NSPanel` (via `tauri-nspanel` 2.1, checked 28 Sep 2026): a plain window from a background app never appears on another app's full-screen Space.
   - Transparent, no decorations, always on top, hidden from the Dock and app switcher.
   - Click-through (`set_ignore_cursor_events(true)`).
   - Covers the display under the cursor, visible on all Spaces and above full-screen apps (window collection behavior: can join all Spaces, full-screen auxiliary).
@@ -651,14 +650,14 @@ Each milestone ends with a demo the owner can run. Tick items as they're done.
 
 ### M2: Capture and the context pack
 
-- [ ] AX element at cursor, ancestors, nearby text, selection, app/window, browser URL; Electron/Chrome accessibility switch-on
-- [ ] Element highlight and snapping; Shift+scroll steps parent/child
-- [ ] ScreenCaptureKit lens crop and window image; own windows excluded; lens outline and cursor marker drawn on the window image
-- [ ] Source classifier from `config/sources.json` (**Verify** its bundle IDs)
-- [ ] ContextPack builder with caps; save and load a pack (JSON + images)
-- [ ] Dev-only pack viewer (shows everything a pack contains)
+- [x] AX element at cursor, ancestors, nearby text, selection, app/window, browser URL; Electron/Chrome accessibility switch-on
+- [x] Element highlight and snapping; Shift+scroll steps parent/child
+- [x] ScreenCaptureKit lens crop and window image; own windows excluded; lens outline and cursor marker drawn on the window image
+- [x] Source classifier from `config/sources.json` (**Verify** its bundle IDs)
+- [x] ContextPack builder with caps; save and load a pack (JSON + images)
+- [x] Dev-only pack viewer (shows everything a pack contains)
 
-**Accepted when:** packs captured in VS Code, Chrome (an Amazon product page), Safari, Finder and Slack look right in the viewer: correct focus text, URL and source hint.
+**Accepted when:** packs captured in VS Code, Chrome (an Amazon product page), Safari, Finder and Slack look right in the viewer: correct focus text, URL and source hint. (Slack isn't installed on the owner's Mac; any Electron app, such as GitHub Desktop, stands in.)
 
 ### M3: Engine layer, Claude API and the popover
 
@@ -787,6 +786,8 @@ VS Code `package.json`, VS Code explorer folder, Amazon product, Linear or Jira 
 | Name: "Context" is hard to search for and may clash with trademarks. The repo is named `smart-context`. | Keep "Context" as the display name; use a placeholder app ID (`dev.context.app`) that's easy to change |
 | Claude Code engine terms check with Anthropic | Build it; confirm before the public launch |
 | Default answer language | The system language |
+| VS Code offers "Screen Reader Optimized" mode once Context switches on its accessibility tree | Keep switching it on (M2 needs VS Code's text). Tell users they can answer No, or set `editor.accessibilitySupport` to `off`. Revisit in M4, when the extension provides the editor text. |
+| The menu-bar icon can hide behind the notch | Opening Context again shows Settings. A global shortcut for Settings is possible later. |
 
 ---
 
@@ -826,4 +827,15 @@ VS Code `package.json`, VS Code explorer folder, Amazon product, Linear or Jira 
 - 5.2 and 5.3: new `pointing` module for the gesture, lens geometry and pointing session; the plan had no home for them.
 - 5.4: the traits as built. Handlers return `Pass`/`Swallow` per event instead of `set_swallow_scroll`; new `Screens` and `Overlay` traits; `Permissions::request_permission` shows the OS prompt and opens the pane.
 - 3.3: Settings opens on launch when a permission is missing (replacing M0's dev-only auto-open). The default excluded-apps list lives in `settings`; editing it comes with the settings store.
+- 5.5: the lens is a non-activating `NSPanel`, not a plain window. Testing showed a plain window stays off screen over full-screen apps.
 - M1 findings: on macOS 26 the Dock keeps a full-screen window at the Dock level, so window lookups skip layers from the Dock up. In development, macOS grants permissions to the terminal or editor running `npm run dev`, not to Context; Screen Recording only takes effect after that app restarts.
+
+28 Sep 2026, M2:
+
+- 3.3: opening Context again shows Settings; dev builds open Settings at launch, with a button for the capture viewer. The tray icon was hidden behind the notch on the owner's Mac.
+- 4.2: `window: Option<WindowInfo>` carries the app, replacing separate `app` and `window` fields; `workspace` arrives in M4.
+- 4.3: nearby text comes from a hit-test grid inside the lens, not a tree walk; URLs are kept for browsers only; accessibility side effects noted.
+- 4.4: ScreenCaptureKit scales the screenshots; the window limit (1568 px, 1.15 MP) is checked against Anthropic's vision docs.
+- 5.3: `pointing` gained the inspector thread. The traits as built: `Accessibility::inspect` (one call per question, returning the element chain, nearby text, selection and URL), `ScreenCapture::screenshots` (both images at once, within size limits), `platform::is_reopen`.
+- 14: two new open decisions (VS Code screen-reader mode, the hidden menu-bar icon).
+- M2 findings: a capture takes about 350–450 ms (accessibility ~40, screenshots ~170–280, images ~135). Listing windows for ScreenCaptureKit dominates the screenshot time; M3 should start it at key down, as 4.1 step 1 says.

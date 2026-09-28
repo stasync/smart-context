@@ -10,3 +10,36 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Image scaling and encoding (the whole pipeline) is painfully slow
+# unoptimized, which makes dev captures take seconds. Optimize it even in dev.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.adler2]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package."simd-adler32"]
+opt-level = 3
+[profile.dev.package.moxcms]
+opt-level = 3
+[profile.dev.package.pxfm]
+opt-level = 3
+[profile.dev.package."zune-jpeg"]
+opt-level = 3
+[profile.dev.package."zune-core"]
+opt-level = 3
+[profile.dev.package.bytemuck]
+opt-level = 3
+[profile.dev.package."byteorder-lite"]
+opt-level = 3
+[profile.dev.package."num-traits"]
+opt-level = 3

@@ -6,12 +6,19 @@ use std::sync::Arc;
 use tauri::WebviewWindow;
 
 use super::{
-    InputHandler, InputHooks, Overlay, Permission, PermissionStatus, Permissions, PlatformError,
-    Point, Rect, Result, Screens, WindowInfo,
+    Accessibility, AppInfo, InputHandler, InputHooks, InspectOptions, Inspection, Overlay,
+    Permission, PermissionStatus, Permissions, PlatformError, Point, Rect, Result, ScreenCapture,
+    Screens, Screenshots, ShotLimits, WindowInfo,
 };
 
 /// The Windows platform layer.
 pub struct Native;
+
+/// Windows has no reopen event; a second launch will need a single-instance
+/// check (phase 2).
+pub fn is_reopen(_event: &tauri::RunEvent) -> bool {
+    false
+}
 
 impl InputHooks for Native {
     fn start_input(&self, _handler: Arc<dyn InputHandler>) -> Result<()> {
@@ -38,6 +45,23 @@ impl Screens for Native {
 
     fn window_at(&self, _p: Point) -> Option<WindowInfo> {
         None
+    }
+}
+
+impl Accessibility for Native {
+    fn inspect(&self, _app: &AppInfo, _p: Point, _options: &InspectOptions) -> Result<Inspection> {
+        Err(PlatformError::NotSupported)
+    }
+}
+
+impl ScreenCapture for Native {
+    fn screenshots(
+        &self,
+        _window: Option<&WindowInfo>,
+        _lens: Rect,
+        _limits: ShotLimits,
+    ) -> Result<Screenshots> {
+        Err(PlatformError::NotSupported)
     }
 }
 

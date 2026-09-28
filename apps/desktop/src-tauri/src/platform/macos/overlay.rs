@@ -1,27 +1,65 @@
 //! The lens overlay window: click-through, on every Space, above full-screen
 //! apps, and shown without taking focus from the app the user points at.
 
-use objc2_app_kit::{NSPopUpMenuWindowLevel, NSWindow, NSWindowCollectionBehavior};
+use std::sync::OnceLock;
+
+use objc2_app_kit::{
+    NSPopUpMenuWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+};
 use objc2_core_graphics::{CGDisplayBounds, CGMainDisplayID};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use tauri::WebviewWindow;
+use tauri_nspanel::Panel;
 
 use crate::platform::{Rect, Result};
+use panel::LensPanel;
+
+/// `tauri_panel!` brings its own imports, so it gets a module to itself.
+mod panel {
+    tauri_nspanel::tauri_panel! {
+        panel!(LensPanel {
+            config: {
+                can_become_key_window: false,
+                can_become_main_window: false,
+                is_floating_panel: true
+            }
+        })
+    }
+}
+
+/// The lens stays a panel for the app's whole life.
+static LENS_PANEL: OnceLock<LensPanel<tauri::Wry>> = OnceLock::new();
 
 pub fn configure(window: &WebviewWindow) -> Result<()> {
     window.set_ignore_cursor_events(true)?;
-    on_ns_window(window, |w| {
+    let target = window.clone();
+    window.run_on_main_thread(move || {
+        // A plain window from a background app never appears on another
+        // app's full-screen Space; a non-activating panel does.
+        let panel = match LensPanel::from_window(&target) {
+            Ok(panel) => panel,
+            Err(e) => {
+                log::warn!("couldn't turn the lens into a panel: {e}");
+                return;
+            }
+        };
+        if let Err(e) = panel.add_style_mask(NSWindowStyleMask::NonactivatingPanel) {
+            log::warn!("couldn't make the lens non-activating: {e}");
+        }
         // Above the menu bar, popup menus and full-screen windows.
-        w.setLevel(NSPopUpMenuWindowLevel);
-        w.setCollectionBehavior(
+        panel.set_level(NSPopUpMenuWindowLevel as i64);
+        panel.set_collection_behavior(
             NSWindowCollectionBehavior::CanJoinAllSpaces
                 | NSWindowCollectionBehavior::FullScreenAuxiliary
                 | NSWindowCollectionBehavior::Stationary
                 | NSWindowCollectionBehavior::IgnoresCycle,
         );
-        w.setHidesOnDeactivate(false);
-        w.setHasShadow(false);
-    })
+        panel.set_hides_on_deactivate(false);
+        panel.set_has_shadow(false);
+        panel.set_ignores_mouse_events(true);
+        let _ = LENS_PANEL.set(panel);
+    })?;
+    Ok(())
 }
 
 pub fn show(window: &WebviewWindow, display: Rect) -> Result<()> {

@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permissions for the app's windows",
-  "windows": ["settings", "lens"],
+  "windows": ["settings", "lens", "viewer"],
   "permissions": ["core:default"]
 }

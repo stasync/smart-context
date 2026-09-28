@@ -8,7 +8,7 @@ Hold a hotkey, aim a lens at a word, a button, a product photo or a line of code
 - **Reads the real source**, not just pixels: accessibility text, the page URL, your project's files.
 - **Open source.** macOS first; Windows next.
 
-> Status: early development (milestone M0, the app skeleton). The full plan is in [docs/PLAN.md](docs/PLAN.md).
+> Status: early development. Pointing and capturing work (milestones M1 and M2); answers arrive in M3. The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
 ## Run in development
 
@@ -24,9 +24,16 @@ npm install
 npm run dev
 ```
 
-The app lives in the menu bar (look for the ◉ icon). Hold **Right Option ⌥** and move the mouse to aim the lens; scroll to resize it, Esc to cancel.
+The app lives in the menu bar (look for the ◉ icon; on a crowded menu bar it can hide behind the notch). Dev builds open the Settings window on launch.
+
+- Hold **Right Option ⌥** and move the mouse to aim the lens. The element under the cursor gets a dashed outline.
+- Scroll to resize the lens; **Shift+scroll** steps out to the parent element (and back in), snapping the lens to it.
+- Release to capture. Esc cancels.
+- In dev builds every capture is saved as a context pack. **Settings → Development → Open captures** shows them all: screenshots, accessibility text, URL and source.
 
 Context needs **Accessibility** and **Screen Recording** (Settings opens on launch until both are allowed). In development, macOS grants them to the terminal or editor that runs `npm run dev`, such as Terminal or VS Code, not to Context itself. After allowing Screen Recording, restart that app.
+
+Pointing at VS Code switches on its accessibility tree, and VS Code may then offer "Screen Reader Optimized" mode. You can answer No (or set `editor.accessibilitySupport` to `off`).
 
 ## Checks
 

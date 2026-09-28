@@ -1,0 +1,161 @@
+:root {
+  --bg: #ffffff;
+  --panel: #f5f5f7;
+  --fg: #1d1d1f;
+  --muted: #6e6e73;
+  --line: #e5e5ea;
+  --accent: #0a84ff;
+  color-scheme: light dark;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --panel: #252526;
+    --fg: #f5f5f7;
+    --muted: #a1a1a6;
+    --line: #3a3a3c;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.viewer {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  height: 100vh;
+}
+
+.viewer__list {
+  overflow-y: auto;
+  padding: 8px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.pack {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pack span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pack--selected {
+  background: var(--accent);
+  color: #fff;
+}
+
+.pack--selected span {
+  color: rgb(255 255 255 / 80%);
+}
+
+.viewer__details {
+  overflow-y: auto;
+  padding: 20px 28px;
+}
+
+.details h1 {
+  margin: 6px 0 0;
+  font-size: 20px;
+}
+
+.details h2 {
+  margin: 20px 0 6px;
+  font-size: 14px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 12px 0;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fact {
+  display: contents;
+}
+
+.images {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.images figure {
+  margin: 0;
+}
+
+.images img {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.images figcaption {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ancestors {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.nearby {
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: #ff453a;
+}

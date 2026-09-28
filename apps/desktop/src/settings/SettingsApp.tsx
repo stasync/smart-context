@@ -1,4 +1,4 @@
-import { requestPermission } from "../shared/ipc";
+import { openViewer, requestPermission } from "../shared/ipc";
 import { PermissionsSection } from "./PermissionsSection";
 import { usePermissionStatus } from "./usePermissionStatus";
 
@@ -16,6 +16,17 @@ export function SettingsApp() {
         status={status}
         onRequest={(which) => void requestPermission(which)}
       />
+      {import.meta.env.DEV && (
+        <section aria-labelledby="dev-title">
+          <h2 id="dev-title">Development</h2>
+          <p className="muted">
+            Every capture is saved as a context pack while developing.
+          </p>
+          <button type="button" onClick={() => void openViewer()}>
+            Open captures
+          </button>
+        </section>
+      )}
     </main>
   );
 }
