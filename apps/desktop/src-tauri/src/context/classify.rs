@@ -17,6 +17,8 @@ pub enum SourceHint {
 pub struct Classifier {
     code_editors: Vec<String>,
     browsers: Vec<String>,
+    /// Editors the Context VS Code extension runs in.
+    bridge_editors: Vec<String>,
     hosts: Hosts,
 }
 
@@ -31,6 +33,10 @@ impl Classifier {
     pub fn builtin() -> Self {
         serde_json::from_str(include_str!("../../../../../config/sources.json"))
             .expect("config/sources.json is valid")
+    }
+
+    pub fn is_bridge_editor(&self, bundle_id: Option<&str>) -> bool {
+        bundle_id.is_some_and(|id| self.bridge_editors.iter().any(|p| bundle_matches(p, id)))
     }
 
     pub fn is_browser(&self, bundle_id: Option<&str>) -> bool {
@@ -145,6 +151,14 @@ mod tests {
             WebPage
         );
         assert_eq!(classify(chrome, Some("https://mygithub.com/")), WebPage);
+    }
+
+    #[test]
+    fn vs_code_family_editors_have_the_bridge() {
+        let classifier = Classifier::builtin();
+        assert!(classifier.is_bridge_editor(Some("com.microsoft.VSCode")));
+        assert!(classifier.is_bridge_editor(Some("com.vscodium")));
+        assert!(!classifier.is_bridge_editor(Some("com.apple.Terminal")));
     }
 
     #[test]

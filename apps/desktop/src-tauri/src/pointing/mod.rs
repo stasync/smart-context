@@ -20,6 +20,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
+use crate::bridge::Bridge;
 use crate::context::Classifier;
 use crate::orchestrator::Orchestrator;
 use crate::platform::{
@@ -58,6 +59,7 @@ pub struct Parts {
     pub settings: Arc<SettingsStore>,
     pub popover: Arc<Popover>,
     pub orchestrator: Arc<Orchestrator>,
+    pub bridge: Option<Arc<Bridge>>,
     /// Where packs are saved, in dev mode.
     pub packs_dir: Option<PathBuf>,
 }
@@ -72,6 +74,7 @@ impl Pointing {
             settings,
             popover,
             orchestrator,
+            bridge,
             packs_dir,
         } = parts;
         let (worker_tx, worker_rx) = mpsc::channel();
@@ -82,6 +85,7 @@ impl Pointing {
             native: native.clone(),
             classifier: Classifier::builtin(),
             orchestrator: orchestrator.clone(),
+            bridge,
             packs_dir,
             replies: worker_tx.clone(),
         };

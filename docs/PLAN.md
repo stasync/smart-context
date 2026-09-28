@@ -218,7 +218,7 @@ Per-source guidance:
 
 Prompt caching: the static system prompt, the tool definitions and the per-project summary (4.7) form the cached prefix. The Claude API adapter caches the whole prompt, pack included, so follow-ups and Go deeper at the same level reuse it. Checked 28 Sep 2026: the minimum cacheable prompt is 4096 tokens on Haiku 4.5 and 512–1024 on Sonnet 5 and Opus 5. A first answer with both images is about 4.7k tokens, so Low answers do cache.
 
-As built: the first message is the lens image, then the window image (each introduced by one line of text), then the text read from the screen, then the question. Go deeper appends a "Go deeper." message; follow-ups append the user's text; correcting the target starts a new conversation with the correction. History is append-only, as the newer models bind their reasoning blocks to the conversation that produced them.
+As built: the first message is the lens image, then the window image (each introduced by one line of text), then the text read from the screen, then any lookups (7), then the question. Go deeper appends a "Go deeper." message; follow-ups append the user's text; correcting the target starts a new conversation with the correction. History is append-only, as the newer models bind their reasoning blocks to the conversation that produced them.
 
 ### 4.7 Project summary cache (code mode)
 
@@ -554,21 +554,24 @@ Nothing else in the app should change. If it has to, the abstraction is leaking:
 | --- | --- | --- | --- |
 | `list_dir` | `path` (relative to the workspace root), `depth` (≤ 3) | Tree of names; `.gitignore` respected | ≤ 500 entries |
 | `read_file` | `path`, optional `start_line`, `end_line` | File text with line numbers | ≤ 200 KB and ≤ 2,000 lines per call; text files only |
-| `search_project` | `query` (literal or regex), optional `glob` | `path:line: text` matches | ≤ 100 matches; `.gitignore` respected (use ripgrep's crates `ignore` + `grep`; **Verify**) |
+| `search_project` | `query` (literal or regex), optional `glob` | `path:line: text` matches | ≤ 100 matches; `.gitignore` respected (ripgrep's `ignore` crate for the walk, `regex` for matching; checked 28 Sep 2026: `ignore` 0.4.33, `regex` 1.13.1); 3 s, files ≤ 1 MB |
 | `npm_info` | `package` | Description, latest version, homepage, repository, plus the installed version from the lockfile or `node_modules/<pkg>/package.json` | Uses `https://registry.npmjs.org/<pkg>`; 5 s timeout; cached for 24 h |
 
 Sandbox rules, enforced in `tools/sandbox.rs` and covered by unit tests:
 
-- Paths are resolved against the workspace root and canonicalized. Anything outside the root, including via symlinks, is refused.
+- Paths are resolved against the workspace root and canonicalized. Anything outside the root, including via symlinks, is refused. The path as written is checked first, so a refusal never reveals whether something outside the project exists.
 - Never read secret files:
   - `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`
   - `.npmrc`, `.pypirc`, `.netrc`
-  - Anything under `.aws/`, `.ssh/` or `.gnupg/`
+  - Anything under `.aws/`, `.ssh/`, `.gnupg/` or `.git/`
   - `*secret*` and `*credential*` files
   - Keychain and database files
 - Refuse binary files.
 - No tool can write, delete or execute anything.
 - Tools are only offered in code mode, when the bridge has a workspace. Outside code mode, only web search is available.
+- The editor's text follows the same deny-list: if the open file is a secret, its visible text, selections and pointer are dropped from the pack.
+
+Lookup before the first answer (as built in M4): when the editor reports the word under the pointer (8), the toolbox searches the project for it as a whole word before the first request. Lockfiles are left out, with at most 40 matches and 5 per file (starting values), and keywords and numbers are skipped. The results go into the first message, and "What was sent" lists the search. This way even a Low answer can say where something is used without a tool round trip; the model can still call the tools for more.
 
 ---
 
@@ -589,7 +592,9 @@ Extension (`extensions/vscode`, TypeScript):
   - `selections`
   - `openFiles`
   - `focused` (`vscode.window.state.focused`)
-- Reconnects with backoff when the app isn't running. It does nothing else: no commands, no UI in the MVP (maybe a status bar item showing "Context connected").
+- Sends a `pointer { file, line, character, word, lineText, at }` message as soon as VS Code asks its hover provider about a position, which happens when the mouse rests on text. The provider shows nothing. It sends `pointer: null` when that editor scrolls or its text changes. VS Code has no API for the mouse position, and this is the only way to learn the exact word under it.
+- Reconnects with backoff when the app isn't running. A refused connection fires only `error` in Node's WebSocket, so every failure (error, close, a 5 s connect timeout) leads to the same retry.
+- It does nothing else: no commands. A status bar item shows whether Context is connected.
 
 Multiple windows:
 
@@ -598,7 +603,7 @@ Multiple windows:
 
 Pointing inside VS Code:
 
-- Editor: the lens crop shows the token and the extension provides the exact visible text. Together they pin down the line, so no line-height maths is needed.
+- Editor: the extension's pointer gives the exact line and word. The app uses it only if the hover came after the mouse last moved or scrolled (`InputHooks::pointer_still_for`); otherwise the lens crop and the visible text have to pin down the line. Testing showed that at Low effort the model can misread the line from the images alone.
 - Explorer sidebar: accessibility gives the row's name, and the model resolves it with `list_dir` / `search_project`.
 
 Later (not MVP): publish to Open VSX so Cursor and VSCodium can use the same extension.
@@ -686,11 +691,11 @@ Each milestone ends with a demo the owner can run. Tick items as they're done.
 
 ### M4: Code projects
 
-- [ ] VS Code extension and the bridge (token handshake, state messages, multi-window selection)
-- [ ] Local tools with the sandbox; unit tests for path escapes and the secret deny-list
-- [ ] `npm_info` with lockfile/installed version
-- [ ] Project summary cache (4.7)
-- [ ] Clickable file paths (`vscode://file/…`)
+- [x] VS Code extension and the bridge (token handshake, state messages, multi-window selection)
+- [x] Local tools with the sandbox; unit tests for path escapes and the secret deny-list
+- [x] `npm_info` with lockfile/installed version
+- [x] Project summary cache (4.7)
+- [x] Clickable file paths (`vscode://file/…`)
 
 **Accepted when:**
 
@@ -795,7 +800,7 @@ VS Code `package.json`, VS Code explorer folder, Amazon product, Linear or Jira 
 | Name: "Context" is hard to search for and may clash with trademarks. The repo is named `smart-context`. | Keep "Context" as the display name; use a placeholder app ID (`dev.context.app`) that's easy to change |
 | Claude Code engine terms check with Anthropic | Build it; confirm before the public launch |
 | Default answer language | The system language |
-| VS Code offers "Screen Reader Optimized" mode once Context switches on its accessibility tree | Keep switching it on (M2 needs VS Code's text). Tell users they can answer No, or set `editor.accessibilitySupport` to `off`. Revisit in M4, when the extension provides the editor text. |
+| VS Code offers "Screen Reader Optimized" mode once Context switches on its accessibility tree | Keep switching it on (M2 needs VS Code's text). Tell users they can answer No, or set `editor.accessibilitySupport` to `off`. Since M4 the extension gives the editor's text and the word under the pointer, so accessibility matters less inside the editor; the sidebar and panels still need it. |
 | The menu-bar icon can hide behind the notch | Opening Context again shows Settings. A global shortcut for Settings is possible later. |
 
 ---
@@ -859,4 +864,15 @@ VS Code `package.json`, VS Code explorer folder, Amazon product, Linear or Jira 
 - 6.2: `Block::Opaque` round-trips vendor blocks; `EngineEvent::Status`, `Limits`, `EngineInfo` and `Readiness` added.
 - 6.3 and 6.4: `config/models.json` as built: per level `model`, `max_tokens`, `tool_budget`, `web_search_max_uses`, `web_search_tool`, optional `effort`, `fallbacks` and `betas`, and prices for dev-mode cost logs. Verified IDs: `claude-haiku-4-5` (no effort setting), `claude-sonnet-5` (effort medium), `claude-opus-5` (effort high; max). `max_tokens` grew, because it caps reasoning plus the answer; the answer's length comes from the prompt.
 - 14: new open decision on refusal fallbacks.
-- M3 findings: the first real answer (Low, over VS Code) cost about $0.0066: 137 output tokens plus a ~4.7k-token cache write. The API key doesn't appear in the logs, the dev output or saved packs (checked).
+- M3 findings: the first real answer (Low, over VS Code) cost about $0.0066: 137 output tokens plus a ~4.7k-token cache write. The API key doesn't appear in the logs, the dev output or saved packs (checked). The owner accepted M3 on an Amazon product page.
+
+29 Sep 2026, M4:
+
+- 4.2: `workspace` holds the roots, the open file, its visible ranges and text, the selections, the open files, the editor's URI scheme (for file links) and the pointer (8). The bridge is used only for apps in `bridge_editors` in `config/sources.json`.
+- 4.6: the code-mode block of the system prompt: the tool names, "what's under the pointer is the target", say where the target is used and name the files, and link files as `[path:line](path:line)`. It also carries the project summary (4.7). The first message gains the project section (folder, open file, numbered visible lines, selections, pointer) and the lookups (7).
+- 4.7 as built: the summary is made in the background on the first code-mode question, so that answer doesn't wait; later questions get it in the system prompt.
+- 5.4: `InputHooks::pointer_still_for` (how long the mouse has been still), used to check the editor's pointer.
+- 7: `search_project` uses the `ignore` and `regex` crates (the `grep` crate adds nothing for line matching); `.git/` joined the deny-list; paths are checked as written before they're resolved; the editor's text follows the deny-list; the lookup before the first answer is new.
+- 8: the extension's hover-provider pointer and the reconnect behavior (see 8).
+- Prompt changes: the eval runner (13.2) arrives in M6, so these were checked by hand on the express example rather than by the eval.
+- M4 findings: Haiku 4.5 at Low skipped the project tools even when told to always search, and it misread the target line from the images (it explained `zod` with the pointer on `express`). The pointer and the lookup address both.

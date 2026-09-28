@@ -81,6 +81,44 @@ export function PackDetails({ view }: { view: PackView }) {
         </figure>
       </section>
 
+      {pack.workspace && (
+        <section data-testid="workspace">
+          <h2>Project</h2>
+          <dl className="facts">
+            <dt>Folder</dt>
+            <dd>{pack.workspace.roots.join(", ")}</dd>
+            <dt>Open file</dt>
+            <dd>{pack.workspace.activeFile ?? "—"}</dd>
+            <dt>Visible lines</dt>
+            <dd>
+              {pack.workspace.visibleRanges
+                .map((r) => `${r.start + 1}–${r.end + 1}`)
+                .join(", ") || "—"}
+            </dd>
+            {pack.workspace.pointer && (
+              <div className="fact" data-testid="pointer">
+                <dt>Pointer</dt>
+                <dd>
+                  {pack.workspace.pointer.word
+                    ? `“${pack.workspace.pointer.word}”, `
+                    : ""}
+                  line {pack.workspace.pointer.line + 1}
+                </dd>
+              </div>
+            )}
+            {pack.workspace.selections.map((s, i) => (
+              <div key={i} className="fact">
+                <dt>Selection</dt>
+                <dd>{s.text}</dd>
+              </div>
+            ))}
+          </dl>
+          {pack.workspace.visibleText && (
+            <pre className="nearby">{pack.workspace.visibleText}</pre>
+          )}
+        </section>
+      )}
+
       <section>
         <h2>Focus element</h2>
         {pack.focus ? (

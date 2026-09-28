@@ -44,6 +44,7 @@ const view: PackView = {
     lensImage: null,
     windowImage: null,
     source: "Shopping",
+    workspace: null,
   },
   lensImageUrl: null,
   windowImageUrl: null,
@@ -62,5 +63,38 @@ describe("PackDetails", () => {
     expect(screen.getByText("AXHeading — Product title")).toBeTruthy();
     expect(screen.getByTestId("nearby").textContent).toContain("4.7 out of 5");
     expect(screen.getByText("No lens image")).toBeTruthy();
+  });
+
+  it("shows the project in code mode", () => {
+    const code: PackView = {
+      ...view,
+      pack: {
+        ...view.pack,
+        source: "CodeEditor",
+        workspace: {
+          roots: ["/work/shop"],
+          activeFile: "/work/shop/package.json",
+          visibleRanges: [{ start: 0, end: 9 }],
+          visibleText: '"express": "^5.1.0"',
+          selections: [],
+          openFiles: [],
+          pointer: {
+            file: "/work/shop/package.json",
+            line: 0,
+            word: "express",
+            lineText: '"express": "^5.1.0"',
+          },
+          uriScheme: "vscode",
+        },
+      },
+    };
+    render(<PackDetails view={code} />);
+    expect(screen.getByTestId("pointer").textContent).toBe(
+      "Pointer“express”, line 1",
+    );
+    const section = screen.getByTestId("workspace");
+    expect(section.textContent).toContain("/work/shop/package.json");
+    expect(section.textContent).toContain("1–10");
+    expect(section.textContent).toContain('"express"');
   });
 });

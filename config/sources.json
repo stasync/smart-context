@@ -1,5 +1,5 @@
 {
-  "$comment": "Source classifier rules (docs/PLAN.md 4.5). Bundle IDs checked on 28 Sep 2026 (installed apps and Homebrew casks). A trailing .* matches any bundle ID with that prefix. Host patterns: *.example.com matches subdomains, name.* matches the name under any domain ending (amazon.co.uk), anything else matches the host and its subdomains.",
+  "$comment": "Source classifier rules (docs/PLAN.md 4.5). Bundle IDs checked on 28 Sep 2026 (installed apps and Homebrew casks). A trailing .* matches any bundle ID with that prefix. Host patterns: *.example.com matches subdomains, name.* matches the name under any domain ending (amazon.co.uk), anything else matches the host and its subdomains. bridge_editors are the editors the Context VS Code extension runs in; pointing at them adds the project from the extension.",
   "code_editors": [
     "com.microsoft.VSCode",
     "com.microsoft.VSCodeInsiders",
@@ -35,5 +35,11 @@
       "gitlab.com",
       "notion.so"
     ]
-  }
+  },
+  "bridge_editors": [
+    "com.microsoft.VSCode",
+    "com.microsoft.VSCodeInsiders",
+    "com.todesktop.230313mzl4w4u92",
+    "com.vscodium"
+  ]
 }

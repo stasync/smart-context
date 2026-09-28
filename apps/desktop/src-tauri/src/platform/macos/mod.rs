@@ -8,6 +8,7 @@ mod permissions;
 mod screens;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::WebviewWindow;
 
@@ -29,6 +30,10 @@ pub fn is_reopen(event: &tauri::RunEvent) -> bool {
 impl InputHooks for Native {
     fn start_input(&self, handler: Arc<dyn InputHandler>) -> Result<()> {
         input::start(handler)
+    }
+
+    fn pointer_still_for(&self) -> Option<Duration> {
+        Some(input::pointer_still_for())
     }
 }
 

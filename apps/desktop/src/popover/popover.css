@@ -181,3 +181,13 @@ input {
 .sent .images {
   grid-template-columns: 1fr;
 }
+
+.sent h2 {
+  margin: 8px 0 4px;
+  font-size: 12px;
+}
+
+.activity {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}

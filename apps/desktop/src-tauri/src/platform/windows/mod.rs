@@ -2,6 +2,7 @@
 //! `NotSupported` (docs/PLAN.md section 12, phase 2).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::WebviewWindow;
 
@@ -23,6 +24,10 @@ pub fn is_reopen(_event: &tauri::RunEvent) -> bool {
 impl InputHooks for Native {
     fn start_input(&self, _handler: Arc<dyn InputHandler>) -> Result<()> {
         Err(PlatformError::NotSupported)
+    }
+
+    fn pointer_still_for(&self) -> Option<Duration> {
+        None
     }
 }
 

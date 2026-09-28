@@ -289,6 +289,10 @@ pub trait InputHooks {
     /// Starts the global input hooks on their own thread. If the permission
     /// they need is missing, keeps retrying until it's granted.
     fn start_input(&self, handler: Arc<dyn InputHandler>) -> Result<()>;
+
+    /// How long the mouse has been still: no move, drag or scroll. None if
+    /// the OS can't say.
+    fn pointer_still_for(&self) -> Option<Duration>;
 }
 
 pub trait Permissions {

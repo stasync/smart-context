@@ -12,17 +12,21 @@ mod secrets;
 mod settings;
 mod tools;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry};
+use tauri_plugin_opener::OpenerExt;
+
+use bridge::Bridge;
 
 use engines::anthropic_api::{self, AnthropicApi};
 use engines::{Effort, Engine, EngineInfo, Readiness};
 use orchestrator::Orchestrator;
+use orchestrator::summary::ProjectSummaries;
 use platform::{
     InputHooks, Native, Overlay, OverlayKind, Permission, PermissionStatus, Permissions,
 };
@@ -31,6 +35,8 @@ use popover::Popover;
 use replay::{PackSummary, PackView};
 use secrets::{Keychain, Secrets};
 use settings::SettingsStore;
+use tools::ProjectToolProvider;
+use tools::sandbox::Sandbox;
 
 const SETTINGS_WINDOW: &str = "settings";
 const VIEWER_WINDOW: &str = "viewer";
@@ -73,7 +79,8 @@ pub fn run() {
             popover_set_effort,
             popover_correct,
             popover_close,
-            popover_sent
+            popover_sent,
+            open_file
         ])
         .setup(|app| {
             // Menu bar only: no Dock icon, no app switcher entry.
@@ -97,9 +104,15 @@ pub fn run() {
                 app.path().app_config_dir()?.join("settings.json"),
             ));
             let dev_mode = settings.get().dev_mode;
-            let packs_dir = dev_mode
-                .then(|| app.path().app_data_dir().map(|d| d.join("packs")))
-                .transpose()?;
+            let data_dir = app.path().app_data_dir()?;
+            let packs_dir = dev_mode.then(|| data_dir.join("packs"));
+            let bridge = match tauri::async_runtime::block_on(Bridge::start(&data_dir)) {
+                Ok(bridge) => Some(bridge),
+                Err(e) => {
+                    log::warn!("the VS Code bridge didn't start: {e}");
+                    None
+                }
+            };
 
             let secrets = Arc::new(Secrets::new(Box::new(Keychain::new(KEYCHAIN_SERVICE))));
             let engine: ActiveEngine =
@@ -109,6 +122,8 @@ pub fn run() {
                 engine.clone(),
                 settings.clone(),
                 popover.clone(),
+                Arc::new(ProjectToolProvider::new()),
+                Some(Arc::new(ProjectSummaries::new(data_dir.join("projects")))),
             ));
 
             let pointing = Pointing::start(pointing::Parts {
@@ -117,6 +132,7 @@ pub fn run() {
                 settings: settings.clone(),
                 popover: popover.clone(),
                 orchestrator: orchestrator.clone(),
+                bridge,
                 packs_dir: packs_dir.clone(),
             });
             if let Err(e) = native.start_input(pointing.clone()) {
@@ -274,10 +290,59 @@ fn popover_close(popover: State<'_, Arc<Popover>>, orchestrator: State<'_, Arc<O
     orchestrator.cancel();
 }
 
-/// "What was sent": the current conversation's context pack.
+/// "What was sent": the context pack, and what the tools read since.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Sent {
+    view: PackView,
+    activity: Vec<String>,
+}
+
 #[tauri::command]
-fn popover_sent(orchestrator: State<'_, Arc<Orchestrator>>) -> Option<PackView> {
-    orchestrator.pack().map(|pack| replay::view(&pack))
+fn popover_sent(orchestrator: State<'_, Arc<Orchestrator>>) -> Option<Sent> {
+    orchestrator.sent().map(|(pack, activity)| Sent {
+        view: replay::view(&pack),
+        activity,
+    })
+}
+
+/// Opens a project file from an answer's link in the editor, at a line.
+/// The path comes from the model, so it goes through the sandbox first.
+#[tauri::command]
+fn open_file(
+    path: String,
+    line: Option<u32>,
+    app: AppHandle,
+    orchestrator: State<'_, Arc<Orchestrator>>,
+) -> Result<(), String> {
+    let pack = orchestrator.pack().ok_or("there's no answer open")?;
+    let workspace = pack.workspace.as_ref().ok_or("not in a code project")?;
+    let file = Sandbox::new(&workspace.roots)
+        .resolve(&path)
+        .map_err(|e| e.to_string())?;
+    app.opener()
+        .open_url(editor_url(&workspace.uri_scheme, &file, line), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// `vscode://file/<absolute path>:<line>`, in the editor's own scheme.
+fn editor_url(scheme: &str, file: &Path, line: Option<u32>) -> String {
+    let scheme = if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+    {
+        scheme
+    } else {
+        "vscode"
+    };
+    let mut path = String::new();
+    for byte in file.to_string_lossy().bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
+            path.push(byte as char);
+        } else {
+            path.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    let line = line.map(|l| format!(":{l}")).unwrap_or_default();
+    format!("{scheme}://file{path}{line}")
 }
 
 /// Async, so the window isn't built while the main thread waits on the command.
@@ -366,6 +431,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn editor_urls_are_encoded_and_scheme_checked() {
+        use std::path::Path;
+        assert_eq!(
+            super::editor_url("vscode", Path::new("/work/my shop/src/server.ts"), Some(12)),
+            "vscode://file/work/my%20shop/src/server.ts:12"
+        );
+        assert_eq!(
+            super::editor_url("cursor", Path::new("/a.ts"), None),
+            "cursor://file/a.ts"
+        );
+        assert_eq!(
+            super::editor_url("javascript:alert(1)//", Path::new("/a.ts"), None),
+            "vscode://file/a.ts"
+        );
     }
 
     #[test]

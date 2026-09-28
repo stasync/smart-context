@@ -8,7 +8,7 @@ Hold a hotkey, aim a lens at a word, a button, a product photo or a line of code
 - **Reads the real source**, not just pixels: accessibility text, the page URL, your project's files.
 - **Open source.** macOS first; Windows next.
 
-> Status: early development. Pointing, capturing and answers with your own Claude API key work (milestones M1–M3); project reading in VS Code arrives in M4. The full plan is in [docs/PLAN.md](docs/PLAN.md).
+> Status: early development. Pointing, capturing, answers with your own Claude API key and project reading in VS Code work (milestones M1–M4); the Claude Code engine comes in M5. The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
 ## Run in development
 
@@ -39,6 +39,17 @@ Context needs **Accessibility** and **Screen Recording** (Settings opens on laun
 
 Pointing at VS Code switches on its accessibility tree, and VS Code may then offer "Screen Reader Optimized" mode. You can answer No (or set `editor.accessibilitySupport` to `off`).
 
+### Code projects in VS Code
+
+The extension in `extensions/vscode` tells Context which project is open, what's visible and which word the mouse rests on. Context can then read the project (read-only, never secret files such as `.env`) and name the files that use what you pointed at. It isn't published yet, so run it from the repo:
+
+```sh
+npm run build -w extensions/vscode
+code --new-window --extensionDevelopmentPath="$PWD/extensions/vscode" eval/projects/express-demo
+```
+
+This opens a VS Code window with the extension loaded; the status bar shows **Context** with an open eye once it's connected to the app. Point at `"express"` in `package.json` and hold still for a moment before releasing: VS Code reports the word under the mouse after its hover delay. **What was sent** lists what Context searched and read, and file names in the answer open in VS Code.
+
 ## Checks
 
 ```sh
@@ -50,11 +61,11 @@ cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo te
 
 | Path | What's there |
 | --- | --- |
-| `apps/desktop/src` | React + TypeScript UI (settings now; lens and popover later) |
+| `apps/desktop/src` | React + TypeScript UI: settings, lens, popover and the dev capture viewer |
 | `apps/desktop/src-tauri` | Rust core: tray, windows, and the modules from the plan |
 | `extensions/vscode` | VS Code extension that shares editor state with the app |
 | `config` | Effort → model mapping and source-classifier rules |
-| `eval` | Saved context packs and expectations |
+| `eval` | Saved context packs, expectations and a demo project (`eval/projects/express-demo`) |
 | `docs/PLAN.md` | Product and build plan |
 
 Contributors and coding agents: read [CLAUDE.md](CLAUDE.md) first.

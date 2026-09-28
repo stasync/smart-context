@@ -100,7 +100,6 @@ impl Message {
     }
 
     /// The message's plain text, joined.
-    #[cfg(test)]
     pub fn text(&self) -> String {
         self.content
             .iter()

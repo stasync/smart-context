@@ -5,18 +5,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tauri::{AppHandle, Emitter};
 
 use super::Msg;
+use crate::bridge::Bridge;
 use crate::context::{
     Capture, Classifier, ContextPack, MAX_ANCESTORS, MAX_NEARBY_CHARS, SHOT_LIMITS,
 };
 use crate::orchestrator::Orchestrator;
 use crate::platform::{
-    Accessibility, AppInfo, InspectOptions, Native, Point, Rect, ScreenCapture, TextBudget,
-    WindowInfo,
+    Accessibility, AppInfo, InputHooks, InspectOptions, Native, Point, Rect, ScreenCapture,
+    TextBudget, WindowInfo,
 };
 use crate::replay;
 
@@ -52,6 +53,8 @@ pub struct Inspector {
     pub native: Arc<Native>,
     pub classifier: Classifier,
     pub orchestrator: Arc<Orchestrator>,
+    /// The VS Code bridge, if it started.
+    pub bridge: Option<Arc<Bridge>>,
     /// Where packs are saved in dev mode.
     pub packs_dir: Option<PathBuf>,
     pub replies: Sender<Msg>,
@@ -92,6 +95,11 @@ impl Inspector {
 
     fn capture(&self, job: CaptureJob) {
         let started = Instant::now();
+        // Measured now, as close to the key release as possible.
+        let still_since = self
+            .native
+            .pointer_still_for()
+            .and_then(|still| SystemTime::now().checked_sub(still));
         let inspection = job
             .window
             .as_ref()
@@ -119,7 +127,7 @@ impl Inspector {
             });
         let shot = started.elapsed();
 
-        let pack = ContextPack::build(
+        let mut pack = ContextPack::build(
             Capture {
                 cursor: job.cursor,
                 lens: job.lens,
@@ -130,6 +138,18 @@ impl Inspector {
             },
             &self.classifier,
         );
+        // Pointing into VS Code: add the project, as the extension reports it.
+        let bundle_id = pack
+            .window
+            .as_ref()
+            .and_then(|w| w.app.bundle_id.as_deref());
+        if self.classifier.is_bridge_editor(bundle_id) {
+            pack.workspace = self
+                .bridge
+                .as_ref()
+                .and_then(|b| b.workspace(still_since))
+                .map(|w| w.redact_secrets());
+        }
         log::info!(
             "captured a {:?} pack in {} ms (accessibility {} ms, screenshots {} ms, images {} ms)",
             pack.source,

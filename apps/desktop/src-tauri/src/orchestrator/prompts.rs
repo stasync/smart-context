@@ -2,6 +2,9 @@
 //! block per source hint and effort, and the context pack as the first
 //! message. Changing these means running the eval before and after (13.2).
 
+use std::path::Path;
+
+use crate::bridge::Workspace;
 use crate::context::{ContextPack, SourceHint};
 use crate::engines::{Block, Effort, Message};
 use crate::platform::ElementInfo;
@@ -22,9 +25,28 @@ How to answer:
 - For names, numbers and spelling, trust the text you're given over what the pixels seem to say.
 - Start with one line: TARGET: <what the user pointed at and where, in 12 words or fewer>. Then a blank line, then the answer in Markdown.
 - If you're unsure what the target is, name the most likely one in the TARGET line and answer that. The user can correct it.
-- Use tools, including web search, only when the screen doesn't answer the question.";
+- Search the web only when the screen doesn't answer the question.";
 
-pub fn system(source: SourceHint, effort: Effort, language: &str) -> String {
+/// For making a project's summary (docs/PLAN.md 4.7).
+pub const SUMMARY: &str = "Summarize this code project for a developer who's about to ask questions about it: what it is, its main stack, and its entry points. At most 120 words, plain text, no headings. Use only what's in the files you're given.";
+
+const CODE_MODE: &str = "\
+The user is in a code project, and you can read it with the tools list_dir, read_file, search_project and npm_info. Paths are relative to the project root.
+- If the editor reports what's under the pointer, that's the target.
+- When the target is a dependency, symbol or setting, say where the project uses it and name those files. Use the search results you're given; call search_project yourself when there are none or they aren't enough. Read a file only when the search results aren't enough.
+- When you mention a project file, link it like [src/server.ts:12](src/server.ts:12): the path relative to the project root, with a line number when it helps.";
+
+/// Code-mode extras for the system prompt.
+pub struct Project<'a> {
+    pub summary: Option<&'a str>,
+}
+
+pub fn system(
+    source: SourceHint,
+    effort: Effort,
+    language: &str,
+    project: Option<Project<'_>>,
+) -> String {
     let length = match effort {
         Effort::Low => "Answer in 2–4 sentences. No headings, no lists.",
         Effort::Medium => {
@@ -37,10 +59,20 @@ pub fn system(source: SourceHint, effort: Effort, language: &str) -> String {
             "Give the most complete answer you can. Short sections with headings and lists are fine. Cite the files and links you used."
         }
     };
-    format!(
+    let mut prompt = format!(
         "{SHARED}\n- {length}\n- Write the answer in the language with the BCP 47 tag \"{language}\". Keep the \"TARGET:\" prefix itself in English.\n\n{}",
         source_guidance(source, effort)
-    )
+    );
+    if let Some(project) = project {
+        prompt.push_str("\n\n");
+        prompt.push_str(CODE_MODE);
+        if let Some(summary) = project.summary {
+            prompt.push_str(&format!(
+                "\n\nAbout this project (a summary made earlier):\n{summary}"
+            ));
+        }
+    }
+    prompt
 }
 
 fn source_guidance(source: SourceHint, effort: Effort) -> String {
@@ -55,7 +87,8 @@ fn source_guidance(source: SourceHint, effort: Effort) -> String {
 }
 
 /// The first message: the screenshots first (they work best before text),
-/// then everything read from the screen, then the question.
+/// then everything read from the screen, then the question in a block of its
+/// own (lookups go just before it).
 pub fn first_message(
     pack: &ContextPack,
     question: Option<&str>,
@@ -80,15 +113,16 @@ pub fn first_message(
         });
     }
 
-    let mut text = screen_text(pack);
+    blocks.push(Block::Text(screen_text(pack)));
+    let mut ask = String::new();
     if let Some(correction) = correction {
-        text.push_str(&format!("\nThe user says they pointed at: {correction}\n"));
+        ask.push_str(&format!("The user says they pointed at: {correction}\n"));
     }
-    text.push_str(&format!(
-        "\nQuestion: {}",
+    ask.push_str(&format!(
+        "Question: {}",
         question.unwrap_or(DEFAULT_QUESTION)
     ));
-    blocks.push(Block::Text(text));
+    blocks.push(Block::Text(ask));
     Message::user(blocks)
 }
 
@@ -111,6 +145,9 @@ fn screen_text(pack: &ContextPack) -> String {
     }
     if let Some(url) = &pack.url {
         lines.push(format!("Page URL: {url}"));
+    }
+    if let Some(workspace) = &pack.workspace {
+        lines.push(workspace_text(workspace));
     }
     if let Some(focus) = &pack.focus {
         lines.push(format!("Element under the pointer: {}", describe(focus)));
@@ -135,6 +172,72 @@ fn screen_text(pack: &ContextPack) -> String {
     let mut text = lines.join("\n");
     text.push('\n');
     text
+}
+
+/// The project, the open file and its visible lines, numbered.
+fn workspace_text(workspace: &Workspace) -> String {
+    let root = workspace.roots.first();
+    let relative = |path: &Path| -> String {
+        root.and_then(|r| path.strip_prefix(r).ok())
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    };
+    let mut lines = Vec::new();
+    for (i, root) in workspace.roots.iter().enumerate() {
+        let label = if i == 0 {
+            "Project folder"
+        } else {
+            "Also open"
+        };
+        lines.push(format!("{label}: {}", root.display()));
+    }
+    if let Some(file) = &workspace.active_file {
+        let file = relative(file);
+        lines.push(format!("Open file: {file}"));
+        if !workspace.visible_text.is_empty() {
+            lines.push(format!(
+                "Visible lines of {file}:\n<code path=\"{file}\">\n{}\n</code>",
+                number_lines(&workspace.visible_text, &workspace.visible_ranges)
+            ));
+        }
+    }
+    for selection in workspace.selections.iter().filter(|s| !s.text.is_empty()) {
+        lines.push(format!(
+            "Selected (lines {}–{}):\n<selection>\n{}\n</selection>",
+            selection.start_line + 1,
+            selection.end_line + 1,
+            selection.text
+        ));
+    }
+    if let Some(pointer) = &workspace.pointer {
+        let word = match pointer.word.as_str() {
+            "" => String::new(),
+            word => format!("“{word}” in "),
+        };
+        lines.push(format!(
+            "Under the pointer, as the editor reports it: {word}{} line {}:\n<line>{}</line>",
+            relative(&pointer.file),
+            pointer.line + 1,
+            pointer.line_text.trim()
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Numbers the visible text using the (zero-based) visible ranges; lines
+/// past the ranges keep counting from the last one.
+fn number_lines(text: &str, ranges: &[crate::bridge::LineRange]) -> String {
+    let mut numbers = ranges.iter().flat_map(|r| r.start..=r.end).map(|n| n + 1);
+    let mut next = 1;
+    text.lines()
+        .map(|line| {
+            let number = numbers.next().unwrap_or(next);
+            next = number + 1;
+            format!("{number:>5}  {line}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// "text field: “visa_docs”", from whatever the element offers.
@@ -223,7 +326,7 @@ mod tests {
                 _ => "other",
             })
             .collect();
-        assert_eq!(kinds, ["text", "image", "text", "image", "text"]);
+        assert_eq!(kinds, ["text", "image", "text", "image", "text", "text"]);
 
         let text = message.text();
         assert!(text.contains("App: Google Chrome (com.google.Chrome)"));
@@ -245,15 +348,65 @@ mod tests {
 
     #[test]
     fn the_system_prompt_follows_effort_source_and_language() {
-        let low = system(SourceHint::Shopping, Effort::Low, "de-DE");
+        let low = system(SourceHint::Shopping, Effort::Low, "de-DE", None);
         assert!(low.contains("2–4 sentences"));
         assert!(low.contains("\"de-DE\""));
         assert!(!low.contains("reviewers"));
         assert!(low.contains("TARGET:"));
 
-        let medium = system(SourceHint::Shopping, Effort::Medium, "en");
+        let medium = system(SourceHint::Shopping, Effort::Medium, "en", None);
         assert!(medium.contains("reviewers commonly complain"));
         assert!(medium.contains("Cite the files and links"));
+    }
+
+    #[test]
+    fn code_mode_adds_the_tools_links_and_summary() {
+        let plain = system(SourceHint::CodeEditor, Effort::Low, "en", None);
+        assert!(!plain.contains("read_file"));
+        let project = Project {
+            summary: Some("An Express API for a shop."),
+        };
+        let code = system(SourceHint::CodeEditor, Effort::Low, "en", Some(project));
+        assert!(code.contains("list_dir, read_file, search_project and npm_info"));
+        assert!(code.contains("[src/server.ts:12](src/server.ts:12)"));
+        assert!(code.ends_with("An Express API for a shop."));
+    }
+
+    #[test]
+    fn the_workspace_shows_the_visible_code_numbered() {
+        use crate::bridge::{LineRange, Pointer, Selection};
+        let mut pack = pack();
+        pack.workspace = Some(Workspace {
+            roots: vec!["/work/shop".into()],
+            active_file: Some("/work/shop/package.json".into()),
+            visible_ranges: vec![LineRange { start: 4, end: 6 }],
+            visible_text: "  \"dependencies\": {\n    \"express\": \"^5.1.0\"\n  }".into(),
+            selections: vec![Selection {
+                start_line: 5,
+                end_line: 5,
+                text: "express".into(),
+            }],
+            open_files: vec![],
+            pointer: Some(Pointer {
+                file: "/work/shop/package.json".into(),
+                line: 5,
+                word: "express".into(),
+                line_text: "    \"express\": \"^5.1.0\"".into(),
+            }),
+            uri_scheme: "vscode".into(),
+        });
+        let text = first_message(&pack, None, None).text();
+        assert!(
+            text.contains("Under the pointer, as the editor reports it: “express” in package.json line 6:\n<line>\"express\": \"^5.1.0\"</line>"),
+            "{text}"
+        );
+        assert!(text.contains("Project folder: /work/shop"));
+        assert!(text.contains("Open file: package.json"));
+        assert!(
+            text.contains("    6      \"express\": \"^5.1.0\""),
+            "{text}"
+        );
+        assert!(text.contains("Selected (lines 6–6):\n<selection>\nexpress"));
     }
 
     #[test]
@@ -266,7 +419,10 @@ mod tests {
             SourceHint::OtherApp,
         ] {
             for effort in Effort::ALL {
-                let prompt = system(source, effort, "en").to_lowercase();
+                let project = Project {
+                    summary: Some("A shop API."),
+                };
+                let prompt = system(source, effort, "en", Some(project)).to_lowercase();
                 for name in [
                     "claude",
                     "anthropic",

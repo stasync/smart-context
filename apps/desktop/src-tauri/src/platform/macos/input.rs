@@ -14,8 +14,8 @@ use std::time::Duration;
 use objc2_application_services::AXIsProcessTrusted;
 use objc2_core_foundation::{CFMachPort, CFRetained, CFRunLoop, kCFRunLoopCommonModes};
 use objc2_core_graphics::{
-    CGEvent, CGEventField, CGEventFlags, CGEventMask, CGEventTapLocation, CGEventTapOptions,
-    CGEventTapPlacement, CGEventTapProxy, CGEventType,
+    CGEvent, CGEventField, CGEventFlags, CGEventMask, CGEventSource, CGEventSourceStateID,
+    CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType,
 };
 
 use crate::platform::{Disposition, InputEvent, InputHandler, Key, PlatformError, Point, Result};
@@ -41,6 +41,28 @@ pub fn start(handler: Arc<dyn InputHandler>) -> Result<()> {
         .spawn(move || run(handler))
         .map(|_| ())
         .map_err(|e| PlatformError::Failed(format!("starting the input thread: {e}")))
+}
+
+/// Time since the last mouse move, drag or scroll, from any source.
+pub fn pointer_still_for() -> Duration {
+    [
+        CGEventType::MouseMoved,
+        CGEventType::LeftMouseDragged,
+        CGEventType::RightMouseDragged,
+        CGEventType::OtherMouseDragged,
+        CGEventType::ScrollWheel,
+    ]
+    .into_iter()
+    .map(|kind| {
+        CGEventSource::seconds_since_last_event_type(
+            CGEventSourceStateID::CombinedSessionState,
+            kind,
+        )
+    })
+    .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+    .map(Duration::from_secs_f64)
+    .min()
+    .unwrap_or(Duration::MAX)
 }
 
 /// State the tap callback needs. Lives on the input thread for good.

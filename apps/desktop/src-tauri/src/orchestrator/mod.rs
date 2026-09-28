@@ -4,7 +4,9 @@
 //! and correcting the target starts a new conversation.
 
 pub mod prompts;
+pub mod summary;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use async_trait::async_trait;
@@ -19,6 +21,7 @@ use crate::engines::{
     Usage,
 };
 use crate::settings::SettingsStore;
+use summary::ProjectSummaries;
 
 /// A paused server-side tool loop is resumed at most this many times.
 const MAX_CONTINUATIONS: u32 = 3;
@@ -79,12 +82,46 @@ pub trait AnswerSink: Send + Sync {
     fn send(&self, event: AnswerEvent);
 }
 
-/// Local tools the model may call (docs/PLAN.md 7). Code projects get them in M4.
+/// How a tool call shows up: on the status line while it runs, and in "What
+/// was sent" afterwards.
+pub struct ToolNote {
+    pub status: String,
+    pub record: String,
+}
+
+/// Something a toolbox looks up before the first answer, so a quick answer
+/// can use it without a tool round trip.
+pub struct Lookup {
+    /// For "What was sent".
+    pub record: String,
+    /// For the model, added to the first message.
+    pub text: String,
+}
+
+/// Local tools the model may call (docs/PLAN.md 7).
 #[async_trait]
 pub trait Toolbox: Send + Sync {
     fn specs(&self) -> Vec<ToolSpec>;
+
+    fn describe(&self, name: &str, _input: &serde_json::Value) -> ToolNote {
+        ToolNote {
+            status: format!("Using {name}…"),
+            record: format!("Used {name}"),
+        }
+    }
+
     /// Runs a tool: Ok(output) or Err(message for the model).
     async fn run(&self, name: &str, input: &serde_json::Value) -> Result<String, String>;
+
+    /// What to look up before the first answer about this pack.
+    async fn lookups(&self, _pack: &ContextPack) -> Vec<Lookup> {
+        Vec::new()
+    }
+}
+
+/// Picks the tools for a conversation: project tools in code mode.
+pub trait ToolProvider: Send + Sync {
+    fn tools_for(&self, pack: &ContextPack) -> Arc<dyn Toolbox>;
 }
 
 /// No local tools, outside code mode.
@@ -105,6 +142,8 @@ pub struct Orchestrator {
     engine: Arc<dyn Engine>,
     settings: Arc<SettingsStore>,
     sink: Arc<dyn AnswerSink>,
+    tools: Arc<dyn ToolProvider>,
+    summaries: Option<Arc<ProjectSummaries>>,
     state: Mutex<State>,
 }
 
@@ -123,6 +162,10 @@ struct Conversation {
     busy: bool,
     cancel: CancellationToken,
     toolbox: Arc<dyn Toolbox>,
+    /// The project's summary, fixed for the conversation so its prompt stays cacheable.
+    project_summary: Option<String>,
+    /// What the tools did, for "What was sent".
+    activity: Vec<String>,
 }
 
 impl Orchestrator {
@@ -130,11 +173,15 @@ impl Orchestrator {
         engine: Arc<dyn Engine>,
         settings: Arc<SettingsStore>,
         sink: Arc<dyn AnswerSink>,
+        tools: Arc<dyn ToolProvider>,
+        summaries: Option<Arc<ProjectSummaries>>,
     ) -> Self {
         Self {
             engine,
             settings,
             sink,
+            tools,
+            summaries,
             state: Mutex::default(),
         }
     }
@@ -148,7 +195,9 @@ impl Orchestrator {
     /// Starts a conversation about `pack`. Unless the user is going to type a
     /// question (ask mode), asks the default one right away, at Low effort.
     pub fn begin(self: &Arc<Self>, pack: ContextPack, ask_mode: bool) -> Option<JoinHandle<()>> {
-        self.begin_with(Arc::new(pack), Arc::new(NoTools), ask_mode, None)
+        let pack = Arc::new(pack);
+        let toolbox = self.tools.tools_for(&pack);
+        self.begin_with(pack, toolbox, ask_mode, None)
     }
 
     /// Re-asks about the same pack, with the user's correction of what they
@@ -170,6 +219,7 @@ impl Orchestrator {
         correction: Option<String>,
     ) -> Option<JoinHandle<()>> {
         let ceiling = self.settings.get().effort_ceiling;
+        let project_summary = self.project_summary(&pack);
         let id = {
             let mut state = self.state();
             if let Some(old) = &state.current {
@@ -186,6 +236,8 @@ impl Orchestrator {
                 busy: false,
                 cancel: CancellationToken::new(),
                 toolbox,
+                project_summary,
+                activity: Vec::new(),
             });
             id
         };
@@ -238,9 +290,66 @@ impl Orchestrator {
         }
     }
 
-    /// What the current conversation is about, for "What was sent".
+    /// What the current conversation is about.
     pub fn pack(&self) -> Option<Arc<ContextPack>> {
         self.state().current.as_ref().map(|c| c.pack.clone())
+    }
+
+    /// "What was sent": the pack, and what the tools read since.
+    pub fn sent(&self) -> Option<(Arc<ContextPack>, Vec<String>)> {
+        let state = self.state();
+        let current = state.current.as_ref()?;
+        Some((current.pack.clone(), current.activity.clone()))
+    }
+
+    /// The saved summary of the pack's project. If there's none yet, starts
+    /// making one in the background for the next question.
+    fn project_summary(self: &Arc<Self>, pack: &ContextPack) -> Option<String> {
+        let summaries = self.summaries.as_ref()?;
+        let root = pack.workspace.as_ref()?.roots.first()?.clone();
+        let summary = summaries.get(&root);
+        if summary.is_none() && summaries.claim(&root) {
+            let this = self.clone();
+            async_runtime::spawn(async move { this.make_summary(root).await });
+        }
+        summary
+    }
+
+    async fn make_summary(&self, root: PathBuf) {
+        let Some(summaries) = &self.summaries else {
+            return;
+        };
+        let material = {
+            let root = root.clone();
+            tokio::task::spawn_blocking(move || summary::material(&root))
+                .await
+                .unwrap_or_default()
+        };
+        if !material.is_empty() {
+            let request = AskRequest {
+                effort: Effort::Low,
+                system: prompts::SUMMARY.into(),
+                messages: vec![Message::user_text(material)],
+                tools: Vec::new(),
+                web_search: false,
+            };
+            let (events, _ignored) = mpsc::unbounded_channel();
+            match self
+                .engine
+                .ask(request, events, CancellationToken::new())
+                .await
+            {
+                Ok(outcome) if outcome.stop == StopReason::EndTurn => {
+                    match summaries.store(&root, &outcome.message.text()) {
+                        Ok(()) => log::info!("summarized the project at {}", root.display()),
+                        Err(e) => log::warn!("couldn't save a project summary: {e}"),
+                    }
+                }
+                Ok(_) => log::info!("the project summary didn't finish"),
+                Err(e) => log::info!("couldn't summarize the project: {e}"),
+            }
+        }
+        summaries.release(&root);
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -278,9 +387,44 @@ impl Orchestrator {
         });
         let this = self.clone();
         Some(async_runtime::spawn(async move {
-            let result = this.run_turn(id, turn, effort, &cancel).await;
+            let result = async {
+                if rollback == 0 {
+                    this.look_up(id, &cancel).await?;
+                }
+                this.run_turn(id, turn, effort, &cancel).await
+            }
+            .await;
             this.finish_turn(id, turn, rollback, result);
         }))
+    }
+
+    /// Runs the toolbox's lookups and adds them to the first message, just
+    /// before the question.
+    async fn look_up(&self, id: u64, cancel: &CancellationToken) -> Result<(), EngineError> {
+        let (pack, toolbox) = {
+            let state = self.state();
+            match &state.current {
+                Some(c) if c.id == id => (c.pack.clone(), c.toolbox.clone()),
+                _ => return Err(EngineError::Cancelled),
+            }
+        };
+        let lookups = tokio::select! {
+            () = cancel.cancelled() => return Err(EngineError::Cancelled),
+            lookups = toolbox.lookups(&pack) => lookups,
+        };
+        for lookup in lookups {
+            self.record(id, lookup.record);
+            match &mut self.state().current {
+                Some(c) if c.id == id => {
+                    if let Some(first) = c.history.first_mut() {
+                        let at = first.content.len().saturating_sub(1);
+                        first.content.insert(at, Block::Text(lookup.text));
+                    }
+                }
+                _ => return Err(EngineError::Cancelled),
+            }
+        }
+        Ok(())
     }
 
     /// Calls the engine until the model is done, running local tools on the
@@ -296,7 +440,7 @@ impl Orchestrator {
         let mut tools_left = self.engine.limits(effort).tool_budget;
         let mut continuations = 0;
         loop {
-            let (messages, source, toolbox) = {
+            let (messages, source, toolbox, code_mode, project_summary) = {
                 let state = self.state();
                 let current = match &state.current {
                     Some(c) if c.id == id => c,
@@ -306,11 +450,16 @@ impl Orchestrator {
                     current.history.clone(),
                     current.pack.source,
                     current.toolbox.clone(),
+                    current.pack.workspace.is_some(),
+                    current.project_summary.clone(),
                 )
             };
+            let project = code_mode.then_some(prompts::Project {
+                summary: project_summary.as_deref(),
+            });
             let request = AskRequest {
                 effort,
-                system: prompts::system(source, effort, &settings.language()),
+                system: prompts::system(source, effort, &settings.language(), project),
                 messages,
                 tools: if tools_left > 0 {
                     toolbox.specs()
@@ -320,6 +469,7 @@ impl Orchestrator {
                 web_search: true,
             };
 
+            let offered = request.tools.len();
             let (events, mut incoming) = mpsc::unbounded_channel();
             let forward = async {
                 let mut usage = Usage::default();
@@ -343,9 +493,11 @@ impl Orchestrator {
             let (outcome, usage) =
                 tokio::join!(self.engine.ask(request, events, cancel.clone()), forward);
             let outcome = outcome?;
+            let stop = outcome.stop;
             log::info!(
-                "answer turn {turn} at {}: {} in, {} cache write, {} cache read, {} out tokens, ~${:.4}",
+                "answer turn {turn} at {} ({offered} tools offered, stop {:?}): {} in, {} cache write, {} cache read, {} out tokens, ~${:.4}",
                 effort.key(),
+                stop,
                 usage.input_tokens,
                 usage.cache_write_tokens,
                 usage.cache_read_tokens,
@@ -371,8 +523,11 @@ impl Orchestrator {
                             Err("The tool budget is used up. Answer now with what you have.".into())
                         } else {
                             tools_left -= 1;
-                            self.status(id, turn, Some(format!("Using {name}…")));
-                            toolbox_run(&self.toolbox(id)?, &name, &input, cancel).await?
+                            let toolbox = self.toolbox(id)?;
+                            let note = toolbox.describe(&name, &input);
+                            self.status(id, turn, Some(note.status));
+                            self.record(id, note.record);
+                            toolbox_run(&toolbox, &name, &input, cancel).await?
                         };
                         let (content, is_error) = match result {
                             Ok(output) => (output, false),
@@ -396,6 +551,12 @@ impl Orchestrator {
         match &self.state().current {
             Some(c) if c.id == id => Ok(c.toolbox.clone()),
             _ => Err(EngineError::Cancelled),
+        }
+    }
+
+    fn record(&self, id: u64, note: String) {
+        if let Some(c) = self.state().current.as_mut().filter(|c| c.id == id) {
+            c.activity.push(note);
         }
     }
 
@@ -609,6 +770,14 @@ mod tests {
         }
     }
 
+    struct NoToolsProvider;
+
+    impl ToolProvider for NoToolsProvider {
+        fn tools_for(&self, _pack: &ContextPack) -> Arc<dyn Toolbox> {
+            Arc::new(NoTools)
+        }
+    }
+
     struct Echo;
 
     #[async_trait]
@@ -661,6 +830,8 @@ mod tests {
             engine.clone(),
             settings,
             recorder.clone(),
+            Arc::new(NoToolsProvider),
+            None,
         ));
         (orchestrator, engine, recorder, dir)
     }
@@ -750,6 +921,58 @@ mod tests {
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], (&"echo ran".to_string(), false));
         assert!(results[2].1, "the third call is over budget");
+    }
+
+    struct Looks;
+
+    #[async_trait]
+    impl Toolbox for Looks {
+        fn specs(&self) -> Vec<ToolSpec> {
+            Vec::new()
+        }
+
+        async fn run(&self, name: &str, _input: &serde_json::Value) -> Result<String, String> {
+            Err(format!("no {name}"))
+        }
+
+        async fn lookups(&self, _pack: &ContextPack) -> Vec<Lookup> {
+            vec![Lookup {
+                record: "Searched for “express”".into(),
+                text: "<search_results>src/server.ts:1</search_results>".into(),
+            }]
+        }
+    }
+
+    #[tokio::test]
+    async fn lookups_go_into_the_first_message_once() {
+        let (o, engine, _recorder, _dir) = setup(vec![answer("first"), answer("second")]);
+        let handle = o.begin_with(Arc::new(pack()), Arc::new(Looks), false, None);
+        handle.unwrap().await.unwrap();
+        o.ask("more?".into()).unwrap().await.unwrap();
+
+        let seen = engine.seen.lock().unwrap();
+        let first = &seen[0].1[0].content;
+        let texts: Vec<&str> = first
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        let n = texts.len();
+        assert!(texts[n - 2].contains("src/server.ts:1"), "{texts:?}");
+        assert!(
+            texts[n - 1].starts_with("Question:"),
+            "the question stays last"
+        );
+        assert_eq!(
+            seen[1].1[0].content, *first,
+            "the history isn't edited later"
+        );
+        assert_eq!(seen[1].1.len(), 3);
+        drop(seen);
+        let (_, activity) = o.sent().unwrap();
+        assert_eq!(activity, ["Searched for “express”"]);
     }
 
     #[tokio::test]

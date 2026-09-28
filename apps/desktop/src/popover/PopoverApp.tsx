@@ -11,7 +11,7 @@ import {
   popoverSent,
   popoverSetEffort,
   type Effort,
-  type PackView,
+  type Sent,
 } from "../shared/ipc";
 import { PackDetails } from "../shared/PackDetails";
 import { Markdown } from "./Markdown";
@@ -36,7 +36,7 @@ function Popover({ state }: Props) {
   const [question, setQuestion] = useState("");
   const [editingTarget, setEditingTarget] = useState(false);
   const [correction, setCorrection] = useState("");
-  const [sent, setSent] = useState<PackView | null>(null);
+  const [sent, setSent] = useState<Sent | null>(null);
   const [copied, setCopied] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const body = useRef<HTMLElement>(null);
@@ -141,7 +141,17 @@ function Popover({ state }: Props) {
         ))}
         {sent && (
           <section className="sent" aria-label="What was sent">
-            <PackDetails view={sent} />
+            {sent.activity.length > 0 && (
+              <>
+                <h2>Read by the tools</h2>
+                <ul className="activity">
+                  {sent.activity.map((item, i) => (
+                    <li key={i}>{item}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <PackDetails view={sent.view} />
           </section>
         )}
       </main>

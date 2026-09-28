@@ -9,6 +9,7 @@ use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::bridge::Workspace;
 use crate::platform::{
     ElementInfo, ImageLimit, Inspection, Point, Rect, Screenshots, ShotLimits, WindowInfo,
 };
@@ -56,6 +57,9 @@ pub struct ContextPack {
     pub lens_image: Option<ImageData>,
     pub window_image: Option<ImageData>,
     pub source: SourceHint,
+    /// The project, from the VS Code bridge (code mode).
+    #[serde(default)]
+    pub workspace: Option<Workspace>,
 }
 
 /// An encoded image. On disk, the bytes live in `file` next to pack.json.
@@ -131,6 +135,7 @@ impl ContextPack {
             lens_image,
             window_image,
             source,
+            workspace: None,
         }
     }
 }

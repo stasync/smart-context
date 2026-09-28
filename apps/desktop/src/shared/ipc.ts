@@ -49,6 +49,24 @@ export type ImageData = {
   height: number;
 };
 
+/** The project, from the VS Code extension. Lines are zero-based. */
+export type Workspace = {
+  roots: string[];
+  activeFile: string | null;
+  visibleRanges: { start: number; end: number }[];
+  visibleText: string;
+  selections: { startLine: number; endLine: number; text: string }[];
+  openFiles: string[];
+  /** What the mouse rested on, as the editor reported it. */
+  pointer?: {
+    file: string;
+    line: number;
+    word: string;
+    lineText: string;
+  } | null;
+  uriScheme: string;
+};
+
 /** Everything captured for one question (docs/PLAN.md 4.2). */
 export type ContextPack = {
   id: string;
@@ -65,6 +83,7 @@ export type ContextPack = {
   lensImage: ImageData | null;
   windowImage: ImageData | null;
   source: SourceHint;
+  workspace?: Workspace | null;
 };
 
 export type PackSummary = {
@@ -177,8 +196,12 @@ export const popoverSetEffort = (effort: Effort) =>
 export const popoverCorrect = (target: string) =>
   invoke<void>("popover_correct", { target });
 export const popoverClose = () => invoke<void>("popover_close");
-/** "What was sent": the current conversation's context pack. */
-export const popoverSent = () => invoke<PackView | null>("popover_sent");
+/** "What was sent": the context pack, and what the tools read since. */
+export type Sent = { view: PackView; activity: string[] };
+export const popoverSent = () => invoke<Sent | null>("popover_sent");
+/** Opens a project file from an answer in the editor. Rust checks the path. */
+export const openFile = (path: string, line: number | null) =>
+  invoke<void>("open_file", { path, line });
 export const openSettings = () => invoke<void>("open_settings");
 
 // --- The AI engine (Settings) ---
