@@ -102,7 +102,7 @@ The default question is always "what is this, and why is it here?" Pointing is e
 - Other settings:
   - Effort ceiling (default High; Max is only used when picked manually).
   - Hotkey.
-  - Excluded apps.
+  - Excluded apps. The default list (password managers) is in the `settings` module; editing it comes with the settings store.
   - Answer language (default: the system language).
   - Dev mode, which auto-saves context packs for replay.
 - Menu bar (tray) icon: enable/disable, settings, quit. No Dock icon.
@@ -270,6 +270,7 @@ context/
 │       │   │   ├── mod.rs
 │       │   │   ├── macos/        # event tap, AX, ScreenCaptureKit, panels
 │       │   │   └── windows/      # stubs in MVP (compile, return NotSupported)
+│       │   ├── pointing/         # hold-to-point gesture, lens geometry, the pointing session
 │       │   ├── context/          # ContextPack, builder, classifier, image annotation
 │       │   ├── orchestrator/     # conversation state, effort, tool loop, events to UI
 │       │   ├── engines/          # Engine trait, normalized types, adapters
@@ -300,6 +301,7 @@ The root is a Cargo workspace from M0, so the eval runner can join it as `crates
 | Module | Owns |
 | --- | --- |
 | `platform` | Everything OS-specific: global input hooks, accessibility queries, screen capture, overlay window behavior, opening System Settings panes |
+| `pointing` | The hold-to-point gesture (a pure state machine), lens geometry, and the session that drives the lens overlay and, on release, the capture |
 | `context` | Turning a capture into a ContextPack: text caps, image scaling and annotation, source classification |
 | `orchestrator` | One conversation per popover: effort level, message history, tool loop, budgets, streaming events to the UI, cancellation (Esc closes → cancel request) |
 | `engines` | The vendor-neutral Engine trait and its adapters. No UI or platform code. |
@@ -315,8 +317,22 @@ Keep all OS code behind traits, with `#[cfg(target_os = "...")]` implementations
 
 ```rust
 pub trait InputHooks {        // hold-hotkey, scroll (swallowable), Space, Esc, mouse move
-    fn start(&self, handler: Arc<dyn InputHandler>) -> Result<()>;
-    fn set_swallow_scroll(&self, on: bool);
+    fn start_input(&self, handler: Arc<dyn InputHandler>) -> Result<()>;
+}
+
+pub trait InputHandler {      // runs on the input thread; its answer decides swallowing
+    fn handle(&self, event: InputEvent) -> Disposition;   // Pass | Swallow
+}
+
+pub trait Screens {
+    fn display_at(&self, p: Point) -> Option<Rect>;
+    fn window_at(&self, p: Point) -> Option<WindowInfo>;  // app windows only, never Context's own
+}
+
+pub trait Overlay {           // the lens window: click-through, all Spaces, above full-screen apps
+    fn configure_overlay(&self, window: &WebviewWindow) -> Result<()>;
+    fn show_overlay(&self, window: &WebviewWindow, display: Rect) -> Result<()>;  // never takes focus
+    fn hide_overlay(&self, window: &WebviewWindow) -> Result<()>;
 }
 
 pub trait Accessibility {
@@ -333,10 +349,12 @@ pub trait ScreenCapture {
 }
 
 pub trait Permissions {
-    fn status(&self) -> PermissionStatus;   // accessibility, screen recording
-    fn open_settings(&self, which: Permission);
+    fn permission_status(&self) -> PermissionStatus;   // accessibility, screen recording
+    fn request_permission(&self, which: Permission);   // OS prompt + the System Settings pane
 }
 ```
+
+Each OS implements all the traits on one type, `platform::Native`. Swallowing is decided per event by the handler's return value, rather than by a `set_swallow_scroll` switch, so the gesture state machine alone decides what the app underneath sees.
 
 macOS input: use a `CGEventTap` at session level on a dedicated thread with its own `CFRunLoop`.
 
@@ -614,20 +632,20 @@ Each milestone ends with a demo the owner can run. Tick items as they're done.
 - [x] Repo layout as in 5.2; `config/` files with placeholders (the UI's `lens/`, `popover/` and `shared/` folders arrive with their windows)
 - [x] Lint and format: rustfmt, clippy `-D warnings`, ESLint, Prettier, `tsc --noEmit`
 - [x] Tests wired: `cargo test`, Vitest
-- [ ] GitHub Actions on a macOS runner: lint, test, build
-- [ ] GitHub Actions on a Windows runner: `cargo clippy -D warnings` of the Rust crate (keeps the Windows stubs compiling)
+- [x] GitHub Actions on a macOS runner: lint, test, build
+- [x] GitHub Actions on a Windows runner: `cargo clippy -D warnings` of the Rust crate (keeps the Windows stubs compiling)
 - [x] `README.md` stub (what it is, how to run in dev)
 
 **Accepted when:** the dev command launches a tray-only app with a settings window, and CI is green.
 
 ### M1: Pointing
 
-- [ ] Permissions onboarding: status checks for Accessibility and Screen Recording, buttons that open System Settings, re-check loop
-- [ ] `CGEventTap` input thread: hold-to-show hotkey (default Right Option), Esc, Space, mouse move, scroll; re-enable on timeout
-- [ ] Accidental-trigger rule from section 14 (other key pressed while held, short taps)
-- [ ] Lens overlay window: follows the cursor, click-through, all Spaces, above full-screen apps
-- [ ] Scroll resizes the lens (swallowed); Shift+scroll reserved for M2
-- [ ] Excluded-apps check with the "Context is off here" state
+- [x] Permissions onboarding: status checks for Accessibility and Screen Recording, buttons that open System Settings, re-check loop
+- [x] `CGEventTap` input thread: hold-to-show hotkey (default Right Option), Esc, Space, mouse move, scroll; re-enable on timeout
+- [x] Accidental-trigger rule from section 14 (other key pressed while held, short taps)
+- [x] Lens overlay window: follows the cursor, click-through, all Spaces, above full-screen apps
+- [x] Scroll resizes the lens (swallowed); Shift+scroll reserved for M2
+- [x] Excluded-apps check with the "Context is off here" state
 
 **Accepted when:** the lens works over any app, including full-screen ones. Scrolling resizes it without scrolling the app, and Esc cancels.
 
@@ -802,3 +820,10 @@ VS Code `package.json`, VS Code explorer folder, Amazon product, Linear or Jira 
 - 6.5: added a **Verify** list from `claude --help` (Claude Code 2.1.283): `--strict-mcp-config`, `--restricted`, `--max-turns`, `--effort` values.
 - 11: M1 gained the accidental-trigger item; M2, M3 and M5 items point at their **Verify** work.
 - 14: added the accidental-trigger decision and noted the repo name.
+
+28 Sep 2026, M1:
+
+- 5.2 and 5.3: new `pointing` module for the gesture, lens geometry and pointing session; the plan had no home for them.
+- 5.4: the traits as built. Handlers return `Pass`/`Swallow` per event instead of `set_swallow_scroll`; new `Screens` and `Overlay` traits; `Permissions::request_permission` shows the OS prompt and opens the pane.
+- 3.3: Settings opens on launch when a permission is missing (replacing M0's dev-only auto-open). The default excluded-apps list lives in `settings`; editing it comes with the settings store.
+- M1 findings: on macOS 26 the Dock keeps a full-screen window at the Dock level, so window lookups skip layers from the Dock up. In development, macOS grants permissions to the terminal or editor running `npm run dev`, not to Context; Screen Recording only takes effect after that app restarts.

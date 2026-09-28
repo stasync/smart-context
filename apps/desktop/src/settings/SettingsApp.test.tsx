@@ -1,6 +1,13 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SettingsApp } from "./SettingsApp";
+
+vi.mock("../shared/ipc", () => ({
+  permissionStatus: vi.fn(() =>
+    Promise.resolve({ accessibility: false, screenRecording: false }),
+  ),
+  requestPermission: vi.fn(() => Promise.resolve()),
+}));
 
 describe("SettingsApp", () => {
   it("shows the app name as the heading", () => {

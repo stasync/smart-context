@@ -1,20 +1,25 @@
-//! Context desktop app: app setup, windows and the menu-bar tray.
+//! Context desktop app: app setup, windows, the menu-bar tray and commands.
 
 mod bridge;
 mod context;
 mod engines;
 mod orchestrator;
 mod platform;
+mod pointing;
 mod replay;
 mod secrets;
 mod settings;
 mod tools;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::{AppHandle, Manager, State, WindowEvent};
+
+use platform::{InputHooks, Native, Overlay, Permission, PermissionStatus, Permissions};
+use pointing::Pointing;
+use settings::Settings;
 
 const SETTINGS_WINDOW: &str = "settings";
 
@@ -22,29 +27,44 @@ const MENU_ENABLED: &str = "enabled";
 const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
 
-/// App-wide state shared between the tray and (from M1) the input thread.
-struct AppState {
-    /// Whether pointing is on. Toggled from the tray menu.
-    enabled: AtomicBool,
-}
-
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState {
-            enabled: AtomicBool::new(true),
-        })
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
+        .invoke_handler(tauri::generate_handler![
+            permission_status,
+            request_permission
+        ])
         .setup(|app| {
             // Menu bar only: no Dock icon, no app switcher entry.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            build_tray(app.handle())?;
+            let native = Arc::new(Native);
+            let lens = app
+                .get_webview_window(pointing::LENS_WINDOW)
+                .expect("the lens window is declared in tauri.conf.json");
+            if let Err(e) = native.configure_overlay(&lens) {
+                log::warn!("lens overlay unavailable: {e}");
+            }
 
-            // A menu-bar icon can hide behind the notch, so dev builds open
-            // Settings on launch. M1 replaces this with first-run onboarding.
-            if cfg!(debug_assertions) {
+            let pointing =
+                Pointing::start(app.handle().clone(), native.clone(), Settings::default());
+            if let Err(e) = native.start_input(pointing.clone()) {
+                log::warn!("input hooks unavailable: {e}");
+            }
+            build_tray(app.handle(), pointing.clone())?;
+
+            // First run, or a permission was taken away: show onboarding.
+            if !native.permission_status().all_granted() {
                 show_settings(app.handle());
             }
+
+            app.manage(native);
+            app.manage(pointing);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -60,7 +80,17 @@ pub fn run() {
         .expect("error while running the Context app");
 }
 
-fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+#[tauri::command]
+fn permission_status(native: State<'_, Arc<Native>>) -> PermissionStatus {
+    native.permission_status()
+}
+
+#[tauri::command]
+fn request_permission(native: State<'_, Arc<Native>>, which: Permission) {
+    native.request_permission(which);
+}
+
+fn build_tray(app: &AppHandle, pointing: Arc<Pointing>) -> tauri::Result<()> {
     let enabled = CheckMenuItem::with_id(app, MENU_ENABLED, "Enabled", true, true, None::<&str>)?;
     let settings = MenuItem::with_id(app, MENU_SETTINGS, "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "Quit Context", true, Some("CmdOrCtrl+Q"))?;
@@ -81,11 +111,8 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            MENU_ENABLED => {
-                // The menu toggles the checkmark itself; mirror it into state.
-                let on = enabled.is_checked().unwrap_or(true);
-                app.state::<AppState>().enabled.store(on, Ordering::Relaxed);
-            }
+            // The menu toggles the checkmark itself; follow it.
+            MENU_ENABLED => pointing.set_enabled(enabled.is_checked().unwrap_or(true)),
             MENU_SETTINGS => show_settings(app),
             MENU_QUIT => app.exit(0),
             _ => {}

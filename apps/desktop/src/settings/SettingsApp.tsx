@@ -1,4 +1,10 @@
+import { requestPermission } from "../shared/ipc";
+import { PermissionsSection } from "./PermissionsSection";
+import { usePermissionStatus } from "./usePermissionStatus";
+
 export function SettingsApp() {
+  const status = usePermissionStatus();
+
   return (
     <main className="settings">
       <h1>Context</h1>
@@ -6,9 +12,10 @@ export function SettingsApp() {
         Context runs in the menu bar. Hold the hotkey, point at anything on
         screen, and release to get a short explanation.
       </p>
-      <p className="muted">
-        Permissions, the AI engine and the hotkey will be set up here.
-      </p>
+      <PermissionsSection
+        status={status}
+        onRequest={(which) => void requestPermission(which)}
+      />
     </main>
   );
 }

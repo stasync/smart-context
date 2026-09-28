@@ -22,10 +22,12 @@ export default defineConfig({
     rolldownOptions: {
       input: {
         settings: fileURLToPath(new URL("settings.html", import.meta.url)),
+        lens: fileURLToPath(new URL("lens.html", import.meta.url)),
       },
     },
   },
   test: {
     environment: "jsdom",
+    setupFiles: ["./src/test-setup.ts"],
   },
 });

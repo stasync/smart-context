@@ -24,7 +24,9 @@ npm install
 npm run dev
 ```
 
-The app lives in the menu bar (look for the ◉ icon). Dev builds also open the Settings window on launch.
+The app lives in the menu bar (look for the ◉ icon). Hold **Right Option ⌥** and move the mouse to aim the lens; scroll to resize it, Esc to cancel.
+
+Context needs **Accessibility** and **Screen Recording** (Settings opens on launch until both are allowed). In development, macOS grants them to the terminal or editor that runs `npm run dev`, such as Terminal or VS Code, not to Context itself. After allowing Screen Recording, restart that app.
 
 ## Checks
 
