@@ -1,4 +1,4 @@
-import type { ElementInfo, PackView, Rect } from "../shared/ipc";
+import type { ElementInfo, PackView, Rect } from "./ipc";
 
 const rect = (r: Rect) =>
   `${Math.round(r.x)}, ${Math.round(r.y)} · ${Math.round(r.width)}×${Math.round(r.height)} pt`;

@@ -1,30 +1,48 @@
 {
-  "$comment": "Effort → model mapping per engine (docs/PLAN.md 6.3). Starting values. The anthropic_api model IDs are placeholders until M3, where they are verified against Anthropic's models page.",
+  "$comment": "Effort → model mapping per engine (docs/PLAN.md 6.3). Starting values. anthropic_api model IDs, the web search tool types, effort values, the fallback beta and prices were checked against Anthropic's docs on 28 Sep 2026. Haiku 4.5 takes no effort setting and only the older web search tool. max_tokens caps thinking plus the answer; the answer's length comes from the prompt.",
   "anthropic_api": {
     "low": {
-      "model": "<current Haiku model ID>",
-      "max_tokens": 400,
+      "model": "claude-haiku-4-5",
+      "max_tokens": 1024,
       "tool_budget": 3,
-      "web_search_max_uses": 1
+      "web_search_max_uses": 1,
+      "web_search_tool": "web_search_20250305",
+      "price_input": 1.0,
+      "price_output": 5.0
     },
     "medium": {
-      "model": "<current Sonnet model ID>",
-      "max_tokens": 1200,
+      "model": "claude-sonnet-5",
+      "max_tokens": 4096,
       "tool_budget": 6,
-      "web_search_max_uses": 3
+      "web_search_max_uses": 3,
+      "web_search_tool": "web_search_20260209",
+      "effort": "medium",
+      "price_input": 2.0,
+      "price_output": 10.0
     },
     "high": {
-      "model": "<current Opus model ID>",
-      "max_tokens": 2500,
+      "model": "claude-opus-5",
+      "max_tokens": 8192,
       "tool_budget": 10,
-      "web_search_max_uses": 5
+      "web_search_max_uses": 5,
+      "web_search_tool": "web_search_20260209",
+      "effort": "high",
+      "fallbacks": "default",
+      "betas": ["server-side-fallback-2026-07-01"],
+      "price_input": 5.0,
+      "price_output": 25.0
     },
     "max": {
-      "model": "<current Opus model ID>",
-      "max_tokens": 4000,
+      "model": "claude-opus-5",
+      "max_tokens": 16000,
       "tool_budget": 15,
       "web_search_max_uses": 8,
-      "thinking": true
+      "web_search_tool": "web_search_20260209",
+      "effort": "max",
+      "fallbacks": "default",
+      "betas": ["server-side-fallback-2026-07-01"],
+      "price_input": 5.0,
+      "price_output": 25.0
     }
   },
   "claude_code": {

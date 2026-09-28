@@ -206,7 +206,7 @@ impl Tap {
             | CGEventType::OtherMouseDragged => Some(InputEvent::MouseMoved(location(event))),
             CGEventType::LeftMouseDown
             | CGEventType::RightMouseDown
-            | CGEventType::OtherMouseDown => Some(InputEvent::MouseDown),
+            | CGEventType::OtherMouseDown => Some(InputEvent::MouseDown(location(event))),
             CGEventType::ScrollWheel => {
                 let shift = flags & CGEventFlags::MaskShift.bits() != 0;
                 let mut delta = field(CGEventField::ScrollWheelEventPointDeltaAxis1);

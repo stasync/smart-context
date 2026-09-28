@@ -24,6 +24,7 @@ export default defineConfig({
         settings: fileURLToPath(new URL("settings.html", import.meta.url)),
         lens: fileURLToPath(new URL("lens.html", import.meta.url)),
         viewer: fileURLToPath(new URL("viewer.html", import.meta.url)),
+        popover: fileURLToPath(new URL("popover.html", import.meta.url)),
       },
     },
   },

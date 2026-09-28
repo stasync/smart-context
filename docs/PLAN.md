@@ -216,7 +216,9 @@ Per-source guidance:
 | WorkTool | What the item asks or means, with jargon explained. Relate it to what's visible. |
 | WebPage / OtherApp | Explain the term, element, chart or diagram as it's used here. |
 
-Prompt caching: the static system prompt, the tool definitions and the per-project summary (4.7) form the cached prefix. **Verify** the minimum cacheable prompt length for each model in `config/models.json`: if the prefix is shorter than the minimum, caching silently doesn't happen, which matters most at Low effort.
+Prompt caching: the static system prompt, the tool definitions and the per-project summary (4.7) form the cached prefix. The Claude API adapter caches the whole prompt, pack included, so follow-ups and Go deeper at the same level reuse it. Checked 28 Sep 2026: the minimum cacheable prompt is 4096 tokens on Haiku 4.5 and 512–1024 on Sonnet 5 and Opus 5. A first answer with both images is about 4.7k tokens, so Low answers do cache.
+
+As built: the first message is the lens image, then the window image (each introduced by one line of text), then the text read from the screen, then the question. Go deeper appends a "Go deeper." message; follow-ups append the user's text; correcting the target starts a new conversation with the correction. History is append-only, as the newer models bind their reasoning blocks to the conversation that produced them.
 
 ### 4.7 Project summary cache (code mode)
 
@@ -273,6 +275,7 @@ context/
 │       │   │   ├── macos/        # event tap, AX, ScreenCaptureKit, panels
 │       │   │   └── windows/      # stubs in MVP (compile, return NotSupported)
 │       │   ├── pointing/         # hold-to-point gesture, lens geometry, the pointing session
+│       │   ├── popover/          # the answer popover: placement, show/hide, event stream
 │       │   ├── context/          # ContextPack, builder, classifier, image annotation
 │       │   ├── orchestrator/     # conversation state, effort, tool loop, events to UI
 │       │   ├── engines/          # Engine trait, normalized types, adapters
@@ -305,7 +308,8 @@ The root is a Cargo workspace from M0, so the eval runner can join it as `crates
 | `platform` | Everything OS-specific: global input hooks, accessibility queries, screen capture, overlay window behavior, opening System Settings panes |
 | `pointing` | The hold-to-point gesture (a pure state machine), lens geometry and Shift+scroll stepping, and the session: a lens thread that drives the overlay, and an inspector thread that does all accessibility and screenshot work, one job at a time |
 | `context` | Turning a capture into a ContextPack: text caps, image scaling and annotation, source classification |
-| `orchestrator` | One conversation per popover: effort level, message history, tool loop, budgets, streaming events to the UI, cancellation (Esc closes → cancel request) |
+| `orchestrator` | One conversation per popover: effort level, message history, tool loop, budgets, streaming events to the UI, cancellation (Esc closes → cancel request). Local tools come in through a `Toolbox` trait (M4); the prompts live in `orchestrator/prompts.rs` |
+| `popover` | The answer popover window: placing it beside the lens and on screen, showing and hiding it, and forwarding the orchestrator's `AnswerEvent`s to it |
 | `engines` | The vendor-neutral Engine trait and its adapters. No UI or platform code. |
 | `tools` | Local, read-only tools and the path sandbox |
 | `bridge` | The local WebSocket server and workspace state from the VS Code extension |
@@ -478,12 +482,16 @@ All numbers above are starting values.
 ### 6.4 Anthropic API adapter (`anthropic_api`)
 
 - Endpoint: the Messages API, `POST https://api.anthropic.com/v1/messages`, with `stream: true` (SSE). Headers: `x-api-key`, `anthropic-version`, `content-type` (**Verify** the version header value).
-- HTTP: no official Rust SDK is assumed, so use `reqwest` plus an SSE parser (for example `eventsource-stream`). **Verify** whether a maintained crate now exists before writing your own.
+- HTTP: there is no official Rust SDK. `reqwest` (native TLS, so no C crypto library to build) plus a small SSE parser in `engines/sse.rs`; `eventsource-stream` was last released in 2022. `anthropic-version: 2023-06-01`, checked 28 Sep 2026.
 - Images: base64 image content blocks, lens crop first, then the annotated window image.
 - Tools:
   - Local tools (section 7) go in as custom tools with JSON Schema.
-  - Web search uses Anthropic's server-side web search tool, with `max_uses` from the effort config. **Verify** the current tool type string and its pricing.
-- Prompt caching: put `cache_control` on the system prompt, tool definitions and project summary.
+  - Web search uses Anthropic's server-side web search tool, with `max_uses` from the effort config. The type string depends on the model (`web_search_20260209` on Sonnet 5 and Opus 5, `web_search_20250305` on Haiku 4.5), so it's in `config/models.json`.
+  - Refusals: Opus 5 can decline a request (HTTP 200, `stop_reason: "refusal"`). As Anthropic recommends, High and Max opt into server-side fallbacks (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`), which re-run a declined request on another model. After a fallback, the declined attempt's reasoning isn't sent back. See section 14.
+- Prompt caching: a top-level `cache_control` caches the whole prompt.
+- Blocks the orchestrator doesn't understand (reasoning, server-side tool results) come back as opaque blocks and are sent back unchanged in later turns.
+- Retries: overloads and 5xx up to twice with backoff, rate limits when `retry-after` is under 20 s; only before any output arrives.
+- The key comes from the keychain (`keyring` 4) per request, cached in memory. Settings' paste field sends it once; nothing returns it. Unsigned dev builds may make macOS ask for keychain access after a rebuild.
 - Errors become friendly popover messages:
   - 401: invalid key. 403 or billing errors: no credits.
   - 429: rate limited; honor `retry-after`.
@@ -661,13 +669,13 @@ Each milestone ends with a demo the owner can run. Tick items as they're done.
 
 ### M3: Engine layer, Claude API and the popover
 
-- [ ] Engine trait, normalized messages, orchestrator with tool loop, budgets and cancellation
-- [ ] `anthropic_api` adapter: streaming, images, web search server tool, prompt caching, error mapping
-- [ ] `config/models.json` loading (**Verify** model IDs); effort levels, Go deeper and ceiling
-- [ ] Keychain storage for the API key; engine settings UI with the spend-limit tip
-- [ ] Popover UI: "You pointed at" header with correction, streaming markdown, status line, Go deeper, Copy, What was sent, follow-up box, effort indicator
-- [ ] Ask mode (Space while holding)
-- [ ] System prompt and per-source guidance (4.6)
+- [x] Engine trait, normalized messages, orchestrator with tool loop, budgets and cancellation
+- [x] `anthropic_api` adapter: streaming, images, web search server tool, prompt caching, error mapping
+- [x] `config/models.json` loading (**Verify** model IDs); effort levels, Go deeper and ceiling
+- [x] Keychain storage for the API key; engine settings UI with the spend-limit tip
+- [x] Popover UI: "You pointed at" header with correction, streaming markdown, status line, Go deeper, Copy, What was sent, follow-up box, effort indicator
+- [x] Ask mode (Space while holding)
+- [x] System prompt and per-source guidance (4.6)
 
 **Accepted when:**
 
@@ -782,6 +790,7 @@ VS Code `package.json`, VS Code explorer folder, Amazon product, Linear or Jira 
 | --- | --- |
 | License: MIT or Apache-2.0 | Don't add a LICENSE file yet |
 | Hotkey | Hold Right Option ⌥ (AIPointer already uses Right Cmd) |
+| Server-side refusal fallbacks (High and Max) re-run a declined request on another model | On, as Anthropic recommends; the popover just keeps streaming. Turn off by removing `fallbacks` from `config/models.json`. |
 | Accidental triggers: Right Option types characters on many non-US keyboard layouts, and Option+key shortcuts are common | If any other key (except Space, Esc and Shift) is pressed while the hotkey is held, cancel silently and pass the key through. A hold shorter than 200 ms (starting value) never asks. The lens may still appear within 50 ms. |
 | Name: "Context" is hard to search for and may clash with trademarks. The repo is named `smart-context`. | Keep "Context" as the display name; use a placeholder app ID (`dev.context.app`) that's easy to change |
 | Claude Code engine terms check with Anthropic | Build it; confirm before the public launch |
@@ -839,3 +848,15 @@ VS Code `package.json`, VS Code explorer folder, Amazon product, Linear or Jira 
 - 5.3: `pointing` gained the inspector thread. The traits as built: `Accessibility::inspect` (one call per question, returning the element chain, nearby text, selection and URL), `ScreenCapture::screenshots` (both images at once, within size limits), `platform::is_reopen`.
 - 14: two new open decisions (VS Code screen-reader mode, the hidden menu-bar icon).
 - M2 findings: a capture takes about 350–450 ms (accessibility ~40, screenshots ~170–280, images ~135). Listing windows for ScreenCaptureKit dominates the screenshot time; M3 should start it at key down, as 4.1 step 1 says.
+
+28 Sep 2026, M3:
+
+- 2 and 3.3: engine-specific words in Settings ("Claude API key", the Console link) come from the engine (`EngineInfo`), so the UI itself never names a vendor.
+- 3.2: the popover is a fixed 440×380 panel that scrolls, placed right of the lens (else left, always on screen). It closes on Esc or a click outside (seen by the input hook), and a new gesture replaces it. "What was sent" shows the pack inline. Changing the effort re-asks at that level, up to the ceiling.
+- 4.1 step 1: the window listing for screenshots is prefetched at key down.
+- 4.6: the prompt as built (see 4.6's last paragraph).
+- 5.2 and 5.3: new `popover` module; the orchestrator's `Toolbox` trait and `AnswerEvent` stream.
+- 6.2: `Block::Opaque` round-trips vendor blocks; `EngineEvent::Status`, `Limits`, `EngineInfo` and `Readiness` added.
+- 6.3 and 6.4: `config/models.json` as built: per level `model`, `max_tokens`, `tool_budget`, `web_search_max_uses`, `web_search_tool`, optional `effort`, `fallbacks` and `betas`, and prices for dev-mode cost logs. Verified IDs: `claude-haiku-4-5` (no effort setting), `claude-sonnet-5` (effort medium), `claude-opus-5` (effort high; max). `max_tokens` grew, because it caps reasoning plus the answer; the answer's length comes from the prompt.
+- 14: new open decision on refusal fallbacks.
+- M3 findings: the first real answer (Low, over VS Code) cost about $0.0066: 137 output tokens plus a ~4.7k-token cache write. The API key doesn't appear in the logs, the dev output or saved packs (checked).

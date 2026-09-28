@@ -1,5 +1,6 @@
-//! The lens overlay window: click-through, on every Space, above full-screen
-//! apps, and shown without taking focus from the app the user points at.
+//! Context's floating windows, the lens and the answer popover: on every
+//! Space, above full-screen apps, and never activating Context, so the app
+//! the user points at keeps its focus.
 
 use std::sync::OnceLock;
 
@@ -11,8 +12,8 @@ use objc2_foundation::{NSPoint, NSRect, NSSize};
 use tauri::WebviewWindow;
 use tauri_nspanel::Panel;
 
-use crate::platform::{Rect, Result};
-use panel::LensPanel;
+use crate::platform::{OverlayKind, Rect, Result};
+use panel::{LensPanel, PopoverPanel};
 
 /// `tauri_panel!` brings its own imports, so it gets a module to itself.
 mod panel {
@@ -24,51 +25,73 @@ mod panel {
                 is_floating_panel: true
             }
         })
+        panel!(PopoverPanel {
+            config: {
+                can_become_key_window: true,
+                can_become_main_window: false,
+                becomes_key_only_if_needed: true,
+                is_floating_panel: true
+            }
+        })
     }
 }
 
-/// The lens stays a panel for the app's whole life.
+/// Both stay panels for the app's whole life.
 static LENS_PANEL: OnceLock<LensPanel<tauri::Wry>> = OnceLock::new();
+static POPOVER_PANEL: OnceLock<PopoverPanel<tauri::Wry>> = OnceLock::new();
 
-pub fn configure(window: &WebviewWindow) -> Result<()> {
-    window.set_ignore_cursor_events(true)?;
+pub fn configure(window: &WebviewWindow, kind: OverlayKind) -> Result<()> {
+    if kind == OverlayKind::Lens {
+        window.set_ignore_cursor_events(true)?;
+    }
     let target = window.clone();
     window.run_on_main_thread(move || {
         // A plain window from a background app never appears on another
         // app's full-screen Space; a non-activating panel does.
-        let panel = match LensPanel::from_window(&target) {
-            Ok(panel) => panel,
-            Err(e) => {
-                log::warn!("couldn't turn the lens into a panel: {e}");
-                return;
-            }
+        let result = match kind {
+            OverlayKind::Lens => LensPanel::from_window(&target).map(|panel| {
+                setup(&panel, false);
+                let _ = LENS_PANEL.set(panel);
+            }),
+            OverlayKind::Popover => PopoverPanel::from_window(&target).map(|panel| {
+                setup(&panel, true);
+                let _ = POPOVER_PANEL.set(panel);
+            }),
         };
-        if let Err(e) = panel.add_style_mask(NSWindowStyleMask::NonactivatingPanel) {
-            log::warn!("couldn't make the lens non-activating: {e}");
+        if let Err(e) = result {
+            log::warn!("couldn't turn the {kind:?} window into a panel: {e}");
         }
-        // Above the menu bar, popup menus and full-screen windows.
-        panel.set_level(NSPopUpMenuWindowLevel as i64);
-        panel.set_collection_behavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary
-                | NSWindowCollectionBehavior::Stationary
-                | NSWindowCollectionBehavior::IgnoresCycle,
-        );
-        panel.set_hides_on_deactivate(false);
-        panel.set_has_shadow(false);
-        panel.set_ignores_mouse_events(true);
-        let _ = LENS_PANEL.set(panel);
     })?;
     Ok(())
 }
 
-pub fn show(window: &WebviewWindow, display: Rect) -> Result<()> {
+fn setup(panel: &impl Panel, clickable: bool) {
+    if let Err(e) = panel.add_style_mask(NSWindowStyleMask::NonactivatingPanel) {
+        log::warn!("couldn't make a panel non-activating: {e}");
+    }
+    // Above the menu bar, popup menus and full-screen windows.
+    panel.set_level(NSPopUpMenuWindowLevel as i64);
+    panel.set_collection_behavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    panel.set_hides_on_deactivate(false);
+    panel.set_has_shadow(clickable);
+    panel.set_ignores_mouse_events(!clickable);
+}
+
+pub fn show(window: &WebviewWindow, frame: Rect, focus: bool) -> Result<()> {
     let primary_height = CGDisplayBounds(CGMainDisplayID()).size.height;
-    let frame = to_cocoa(display, primary_height);
+    let frame = to_cocoa(frame, primary_height);
     on_ns_window(window, move |w| {
         w.setFrame_display(frame, true);
-        // Unlike makeKeyAndOrderFront, this doesn't activate Context.
+        // Unlike makeKeyAndOrderFront, neither of these activates Context.
         w.orderFrontRegardless();
+        if focus {
+            w.makeKeyWindow();
+        }
     })
 }
 
@@ -82,7 +105,7 @@ fn on_ns_window(window: &WebviewWindow, f: impl FnOnce(&NSWindow) + Send + 'stat
     window.run_on_main_thread(move || match target.ns_window() {
         // SAFETY: Tauri returns the live NSWindow, and this runs on the main thread.
         Ok(ns_window) => f(unsafe { &*ns_window.cast::<NSWindow>() }),
-        Err(e) => log::warn!("the lens window has no NSWindow: {e}"),
+        Err(e) => log::warn!("an overlay window has no NSWindow: {e}"),
     })?;
     Ok(())
 }

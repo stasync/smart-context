@@ -13,6 +13,7 @@ use super::Msg;
 use crate::context::{
     Capture, Classifier, ContextPack, MAX_ANCESTORS, MAX_NEARBY_CHARS, SHOT_LIMITS,
 };
+use crate::orchestrator::Orchestrator;
 use crate::platform::{
     Accessibility, AppInfo, InspectOptions, Native, Point, Rect, ScreenCapture, TextBudget,
     WindowInfo,
@@ -42,12 +43,15 @@ pub struct CaptureJob {
     pub lens: Rect,
     pub window: Option<WindowInfo>,
     pub focus_level: usize,
+    /// Space was pressed: the user will type the question.
+    pub ask_mode: bool,
 }
 
 pub struct Inspector {
     pub app: AppHandle,
     pub native: Arc<Native>,
     pub classifier: Classifier,
+    pub orchestrator: Arc<Orchestrator>,
     /// Where packs are saved in dev mode.
     pub packs_dir: Option<PathBuf>,
     pub replies: Sender<Msg>,
@@ -135,15 +139,15 @@ impl Inspector {
             (started.elapsed() - shot).as_millis(),
         );
 
-        // M3 answers the pack. In dev mode it's kept for replay.
-        let Some(dir) = &self.packs_dir else {
-            return;
-        };
-        match replay::save(&pack, dir) {
-            Ok(key) => {
-                let _ = self.app.emit(PACK_SAVED_EVENT, key);
+        // In dev mode, every pack is kept for replay.
+        if let Some(dir) = &self.packs_dir {
+            match replay::save(&pack, dir) {
+                Ok(key) => {
+                    let _ = self.app.emit(PACK_SAVED_EVENT, key);
+                }
+                Err(e) => log::warn!("couldn't save the pack: {e}"),
             }
-            Err(e) => log::warn!("couldn't save the pack: {e}"),
         }
+        self.orchestrator.begin(pack, job.ask_mode);
     }
 }

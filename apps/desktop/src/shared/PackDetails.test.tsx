@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { PackView } from "../shared/ipc";
+import type { PackView } from "./ipc";
 import { PackDetails } from "./PackDetails";
 
 const view: PackView = {

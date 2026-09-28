@@ -79,6 +79,23 @@ pub fn list(root: &Path) -> io::Result<Vec<PackSummary>> {
     Ok(packs)
 }
 
+/// A pack with its images inline, for showing it in a webview.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackView {
+    pack: ContextPack,
+    lens_image_url: Option<String>,
+    window_image_url: Option<String>,
+}
+
+pub fn view(pack: &ContextPack) -> PackView {
+    PackView {
+        lens_image_url: pack.lens_image.as_ref().map(data_url),
+        window_image_url: pack.window_image.as_ref().map(data_url),
+        pack: pack.clone(),
+    }
+}
+
 /// An image as a `data:` URL, for showing it in a webview.
 pub fn data_url(image: &ImageData) -> String {
     format!(

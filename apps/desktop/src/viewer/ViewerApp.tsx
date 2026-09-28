@@ -6,7 +6,7 @@ import {
   type PackSummary,
   type PackView,
 } from "../shared/ipc";
-import { PackDetails } from "./PackDetails";
+import { PackDetails } from "../shared/PackDetails";
 
 /** Dev-only: every saved context pack, newest first (docs/PLAN.md, M2). */
 export function ViewerApp() {

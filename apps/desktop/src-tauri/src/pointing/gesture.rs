@@ -54,6 +54,10 @@ impl Default for Gesture {
 }
 
 impl Gesture {
+    pub fn is_idle(&self) -> bool {
+        self.state == State::Idle
+    }
+
     /// Ends any gesture in progress, for example when pointing is switched off.
     pub fn reset(&mut self) -> Option<Action> {
         let was_aiming = matches!(self.state, State::Aiming { .. });
@@ -102,7 +106,9 @@ impl Gesture {
                 } => self.finish_swallowing(Key::Space, Action::AskMode),
                 // Typing with the hotkey held (Option+key characters and
                 // shortcuts) or clicking: the user isn't pointing. Step aside.
-                InputEvent::KeyDown { .. } | InputEvent::OtherModifier | InputEvent::MouseDown => {
+                InputEvent::KeyDown { .. }
+                | InputEvent::OtherModifier
+                | InputEvent::MouseDown(_) => {
                     self.state = State::Finished;
                     (Pass, Some(Action::Cancel))
                 }
@@ -196,7 +202,7 @@ mod tests {
 
     #[test]
     fn other_modifiers_and_clicks_cancel() {
-        for event in [InputEvent::OtherModifier, InputEvent::MouseDown] {
+        for event in [InputEvent::OtherModifier, InputEvent::MouseDown(CURSOR)] {
             let out = run(&[(0, InputEvent::HotkeyDown(CURSOR)), (300, event)]);
             assert_eq!(out[1], (Pass, Some(Action::Cancel)), "{event:?}");
         }

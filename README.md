@@ -8,7 +8,7 @@ Hold a hotkey, aim a lens at a word, a button, a product photo or a line of code
 - **Reads the real source**, not just pixels: accessibility text, the page URL, your project's files.
 - **Open source.** macOS first; Windows next.
 
-> Status: early development. Pointing and capturing work (milestones M1 and M2); answers arrive in M3. The full plan is in [docs/PLAN.md](docs/PLAN.md).
+> Status: early development. Pointing, capturing and answers with your own Claude API key work (milestones M1–M3); project reading in VS Code arrives in M4. The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
 ## Run in development
 
@@ -28,8 +28,12 @@ The app lives in the menu bar (look for the ◉ icon; on a crowded menu bar it c
 
 - Hold **Right Option ⌥** and move the mouse to aim the lens. The element under the cursor gets a dashed outline.
 - Scroll to resize the lens; **Shift+scroll** steps out to the parent element (and back in), snapping the lens to it.
-- Release to capture. Esc cancels.
+- Release to get an answer in a popover next to the cursor. Esc cancels, or closes the popover.
+- Press **Space** while holding to type your own question instead.
+- In the popover: click "You pointed at" to correct it, **Go deeper** for a fuller answer, **What was sent** to see exactly what left your Mac, and the box at the bottom for follow-ups.
 - In dev builds every capture is saved as a context pack. **Settings → Development → Open captures** shows them all: screenshots, accessibility text, URL and source.
+
+For answers, paste a Claude API key into **Settings → AI engine** (create a dedicated key with a spend limit in the [Claude Console](https://platform.claude.com/settings/keys)). It's stored in your macOS Keychain and never shown again. Answers start at Low effort (a small, cheap model); Go deeper steps up to the ceiling set in Settings.
 
 Context needs **Accessibility** and **Screen Recording** (Settings opens on launch until both are allowed). In development, macOS grants them to the terminal or editor that runs `npm run dev`, such as Terminal or VS Code, not to Context itself. After allowing Screen Recording, restart that app.
 

@@ -1,10 +1,10 @@
-//! The pointing session: the hold-to-point gesture, the lens overlay, and the
-//! capture when the user releases.
+//! The pointing session: the hold-to-point gesture, the lens overlay, the
+//! capture when the user releases, and handing it to the popover.
 //!
 //! Three threads share the work. Input arrives on the platform's input
 //! thread, which must never block, so [`Pointing`] only runs the gesture
 //! there. The lens worker drives the overlay window. The inspector does the
-//! slow accessibility and screenshot work.
+//! slow accessibility and screenshot work, then starts the conversation.
 
 mod gesture;
 mod inspector;
@@ -21,11 +21,13 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use crate::context::Classifier;
+use crate::orchestrator::Orchestrator;
 use crate::platform::{
-    Disposition, ElementInfo, InputEvent, InputHandler, Native, Overlay, Point, Rect, Screens,
-    WindowInfo,
+    Disposition, ElementInfo, InputEvent, InputHandler, Key, Native, Overlay, Point, Rect,
+    ScreenCapture, Screens, WindowInfo,
 };
-use crate::settings::Settings;
+use crate::popover::Popover;
+use crate::settings::{Settings, SettingsStore};
 use gesture::{Action, Gesture};
 use inspector::{CaptureJob, Inspector, Job};
 use lens::{Lens, Stepper};
@@ -45,17 +47,33 @@ pub struct Pointing {
     enabled: AtomicBool,
     gesture: Mutex<Gesture>,
     worker: Sender<Msg>,
+    popover: Arc<Popover>,
+    orchestrator: Arc<Orchestrator>,
+}
+
+/// What the pointing session works with.
+pub struct Parts {
+    pub app: AppHandle,
+    pub native: Arc<Native>,
+    pub settings: Arc<SettingsStore>,
+    pub popover: Arc<Popover>,
+    pub orchestrator: Arc<Orchestrator>,
+    /// Where packs are saved, in dev mode.
+    pub packs_dir: Option<PathBuf>,
 }
 
 impl Pointing {
     /// Starts the lens and inspector threads. Feed input to the result via
-    /// [`InputHandler`]. Packs are saved to `packs_dir` when it's set.
-    pub fn start(
-        app: AppHandle,
-        native: Arc<Native>,
-        settings: Settings,
-        packs_dir: Option<PathBuf>,
-    ) -> Arc<Self> {
+    /// [`InputHandler`].
+    pub fn start(parts: Parts) -> Arc<Self> {
+        let Parts {
+            app,
+            native,
+            settings,
+            popover,
+            orchestrator,
+            packs_dir,
+        } = parts;
         let (worker_tx, worker_rx) = mpsc::channel();
         let (inspector_tx, inspector_rx) = mpsc::channel();
 
@@ -63,6 +81,7 @@ impl Pointing {
             app: app.clone(),
             native: native.clone(),
             classifier: Classifier::builtin(),
+            orchestrator: orchestrator.clone(),
             packs_dir,
             replies: worker_tx.clone(),
         };
@@ -74,7 +93,10 @@ impl Pointing {
         let worker = Worker {
             app,
             native,
-            settings,
+            settings_store: settings,
+            settings: Settings::default(),
+            popover: popover.clone(),
+            orchestrator: orchestrator.clone(),
             inspector: inspector_tx,
             lens: Lens::default(),
             stepper: Stepper::default(),
@@ -93,7 +115,15 @@ impl Pointing {
             enabled: AtomicBool::new(true),
             gesture: Mutex::new(Gesture::default()),
             worker: worker_tx,
+            popover,
+            orchestrator,
         })
+    }
+
+    /// Closes the popover and stops its answer.
+    fn close_popover(&self) {
+        self.popover.close();
+        self.orchestrator.cancel();
     }
 
     /// The tray's Enabled switch. Turning pointing off ends a gesture in progress.
@@ -116,6 +146,21 @@ impl Pointing {
 
 impl InputHandler for Pointing {
     fn handle(&self, event: InputEvent) -> Disposition {
+        // The popover closes on Esc or a click outside it (docs/PLAN.md 3.2).
+        match event {
+            InputEvent::KeyDown {
+                key: Key::Escape,
+                repeat: false,
+            } if self.popover.is_open() && self.gesture().is_idle() => {
+                self.close_popover();
+                return Disposition::Swallow;
+            }
+            InputEvent::MouseDown(p) if self.popover.contains(p) == Some(false) => {
+                self.close_popover();
+            }
+            _ => {}
+        }
+
         if !self.enabled.load(Ordering::Relaxed) {
             return Disposition::Pass;
         }
@@ -144,7 +189,11 @@ struct LensView {
 struct Worker {
     app: AppHandle,
     native: Arc<Native>,
+    settings_store: Arc<SettingsStore>,
+    /// A snapshot, taken at each key down.
     settings: Settings,
+    popover: Arc<Popover>,
+    orchestrator: Arc<Orchestrator>,
     inspector: Sender<Job>,
     lens: Lens,
     stepper: Stepper,
@@ -184,6 +233,11 @@ impl Worker {
     fn apply(&mut self, window: &WebviewWindow, action: Action) {
         match action {
             Action::Show(p) => {
+                // A new gesture replaces whatever the popover was showing.
+                self.popover.close();
+                self.orchestrator.cancel();
+                self.native.prepare_screenshots();
+                self.settings = self.settings_store.get();
                 self.aiming = true;
                 self.stepper = Stepper::default();
                 self.chain.clear();
@@ -229,13 +283,20 @@ impl Worker {
                     log::warn!("couldn't hide the lens: {e}");
                 }
                 if action != Action::Cancel && !self.is_off_here() {
-                    // Ask mode's typed question arrives with the popover in M3;
-                    // both start from the same capture.
+                    // The popover opens at once, while the inspector reads
+                    // the screen; ask mode also gives it the keyboard.
+                    let ask_mode = action == Action::AskMode;
+                    let lens = self.lens_rect();
+                    if let Some(display) = self.display {
+                        self.orchestrator.preparing(ask_mode);
+                        self.popover.open(lens, display, ask_mode);
+                    }
                     let job = CaptureJob {
                         cursor: self.cursor,
-                        lens: self.lens_rect(),
+                        lens,
                         window: self.target.clone(),
                         focus_level: self.stepper.level().unwrap_or(0),
+                        ask_mode,
                     };
                     let _ = self.inspector.send(Job::Capture(job));
                 }
@@ -316,7 +377,7 @@ impl Worker {
             log::warn!("no display under the cursor");
             return;
         };
-        if let Err(e) = self.native.show_overlay(window, display) {
+        if let Err(e) = self.native.show_overlay(window, display, false) {
             log::warn!("couldn't show the lens: {e}");
         }
     }

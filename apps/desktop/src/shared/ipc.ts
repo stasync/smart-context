@@ -117,3 +117,90 @@ export function onPackSaved(
 export function openViewer(): Promise<void> {
   return invoke("open_viewer");
 }
+
+// --- Answers (the popover) ---
+
+export type Effort = "low" | "medium" | "high" | "max";
+
+export const EFFORTS: Effort[] = ["low", "medium", "high", "max"];
+
+export const EFFORT_LABELS: Record<Effort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  max: "Max",
+};
+
+/** The conversation, as the Rust orchestrator streams it. */
+export type AnswerEvent =
+  | { kind: "preparing"; askMode: boolean }
+  | {
+      kind: "started";
+      conversation: number;
+      ceiling: Effort;
+      awaitingQuestion: boolean;
+    }
+  | {
+      kind: "turnStarted";
+      conversation: number;
+      turn: number;
+      effort: Effort;
+      prompt: string | null;
+    }
+  | { kind: "delta"; conversation: number; turn: number; text: string }
+  | {
+      kind: "status";
+      conversation: number;
+      turn: number;
+      text: string | null;
+    }
+  | { kind: "turnDone"; conversation: number; turn: number; truncated: boolean }
+  | {
+      kind: "failed";
+      conversation: number;
+      turn: number;
+      message: string;
+      needsSetup: boolean;
+    };
+
+export function onAnswerEvent(
+  handler: (event: AnswerEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AnswerEvent>("answer:event", (event) => handler(event.payload));
+}
+
+export const popoverAsk = (question: string) =>
+  invoke<void>("popover_ask", { question });
+export const popoverGoDeeper = () => invoke<void>("popover_go_deeper");
+export const popoverSetEffort = (effort: Effort) =>
+  invoke<void>("popover_set_effort", { effort });
+export const popoverCorrect = (target: string) =>
+  invoke<void>("popover_correct", { target });
+export const popoverClose = () => invoke<void>("popover_close");
+/** "What was sent": the current conversation's context pack. */
+export const popoverSent = () => invoke<PackView | null>("popover_sent");
+export const openSettings = () => invoke<void>("open_settings");
+
+// --- The AI engine (Settings) ---
+
+export type EngineInfo = {
+  id: string;
+  name: string;
+  keyLabel: string;
+  keyHelp: string;
+  keyHelpUrl: string;
+};
+
+export type Readiness =
+  { state: "ready" } | { state: "needsSetup"; reason: string };
+
+export type EngineStatus = { info: EngineInfo; readiness: Readiness };
+
+export const engineStatus = () => invoke<EngineStatus>("engine_status");
+/** Sends the key to the keychain. Nothing ever sends it back. */
+export const saveApiKey = (key: string) =>
+  invoke<void>("save_api_key", { key });
+export const removeApiKey = () => invoke<void>("remove_api_key");
+export const effortCeiling = () => invoke<Effort>("effort_ceiling");
+export const setEffortCeiling = (effort: Effort) =>
+  invoke<void>("set_effort_ceiling", { effort });

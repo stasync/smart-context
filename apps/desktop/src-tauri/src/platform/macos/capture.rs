@@ -3,7 +3,9 @@
 
 use std::process;
 use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
+use std::sync::{Mutex, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use image::RgbaImage;
@@ -25,6 +27,24 @@ use crate::platform::{
 
 /// ScreenCaptureKit normally answers well within this.
 const TIMEOUT: Duration = Duration::from_secs(2);
+/// A window listing fetched ahead of time is used if it's this fresh.
+const PREPARED_FOR: Duration = Duration::from_secs(3);
+
+/// The window listing fetched at key down, and when.
+static PREPARED: Mutex<Option<(Instant, Delivered<Retained<SCShareableContent>>)>> =
+    Mutex::new(None);
+
+/// Lists the windows in the background (the slow part of a capture), so the
+/// capture on release can skip it.
+pub fn prepare() {
+    thread::spawn(|| match fetch_shareable_content() {
+        Ok(content) => {
+            *PREPARED.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some((Instant::now(), Delivered(content)));
+        }
+        Err(e) => log::debug!("preparing screenshots failed: {e}"),
+    });
+}
 
 type Pending = Receiver<std::result::Result<RgbaImage, String>>;
 
@@ -55,6 +75,17 @@ struct Delivered<T>(T);
 unsafe impl<T> Send for Delivered<T> {}
 
 fn shareable_content() -> Result<Retained<SCShareableContent>> {
+    let prepared = PREPARED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    match prepared {
+        Some((at, Delivered(content))) if at.elapsed() < PREPARED_FOR => Ok(content),
+        _ => fetch_shareable_content(),
+    }
+}
+
+fn fetch_shareable_content() -> Result<Retained<SCShareableContent>> {
     let (tx, rx) = mpsc::sync_channel(1);
     let handler = RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut NSError| {

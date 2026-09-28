@@ -257,8 +257,8 @@ pub enum InputEvent {
     KeyUp(Key),
     /// A modifier other than the hotkey or Shift changed (Cmd, Ctrl, …).
     OtherModifier,
-    /// Any mouse button went down.
-    MouseDown,
+    /// Any mouse button went down, at this point.
+    MouseDown(Point),
     MouseMoved(Point),
     /// Scroll wheel or trackpad, in points. Positive means scrolling up.
     Scroll {
@@ -315,6 +315,10 @@ pub trait Accessibility {
 }
 
 pub trait ScreenCapture {
+    /// Starts the slow part of taking screenshots ahead of time (at key
+    /// down), so the capture on release is quicker.
+    fn prepare_screenshots(&self);
+
     /// Takes the window and lens screenshots within `limits`, scaling on the
     /// way in. Either can be missing if it fails.
     fn screenshots(
@@ -325,13 +329,24 @@ pub trait ScreenCapture {
     ) -> Result<Screenshots>;
 }
 
-pub trait Overlay {
-    /// One-time setup for the lens window: click-through, on all Spaces and
-    /// above full-screen apps.
-    fn configure_overlay(&self, window: &WebviewWindow) -> Result<()>;
+/// The floating windows Context shows over other apps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverlayKind {
+    /// Click-through, never takes focus.
+    Lens,
+    /// Clickable; takes keyboard focus only when asked to (ask mode) or when
+    /// the user clicks its text box.
+    Popover,
+}
 
-    /// Moves the overlay to cover `display` and shows it without taking focus.
-    fn show_overlay(&self, window: &WebviewWindow, display: Rect) -> Result<()>;
+pub trait Overlay {
+    /// One-time setup: on all Spaces, above full-screen apps, and never
+    /// activating Context.
+    fn configure_overlay(&self, window: &WebviewWindow, kind: OverlayKind) -> Result<()>;
+
+    /// Places the overlay at `frame` and shows it. With `focus`, it also
+    /// takes the keyboard, still without activating Context.
+    fn show_overlay(&self, window: &WebviewWindow, frame: Rect, focus: bool) -> Result<()>;
 
     fn hide_overlay(&self, window: &WebviewWindow) -> Result<()>;
 }

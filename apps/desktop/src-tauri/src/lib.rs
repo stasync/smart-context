@@ -6,6 +6,7 @@ mod engines;
 mod orchestrator;
 mod platform;
 mod pointing;
+mod popover;
 mod replay;
 mod secrets;
 mod settings;
@@ -19,14 +20,22 @@ use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem}
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry};
 
-use context::ContextPack;
-use platform::{InputHooks, Native, Overlay, Permission, PermissionStatus, Permissions};
+use engines::anthropic_api::{self, AnthropicApi};
+use engines::{Effort, Engine, EngineInfo, Readiness};
+use orchestrator::Orchestrator;
+use platform::{
+    InputHooks, Native, Overlay, OverlayKind, Permission, PermissionStatus, Permissions,
+};
 use pointing::Pointing;
-use replay::PackSummary;
-use settings::Settings;
+use popover::Popover;
+use replay::{PackSummary, PackView};
+use secrets::{Keychain, Secrets};
+use settings::SettingsStore;
 
 const SETTINGS_WINDOW: &str = "settings";
 const VIEWER_WINDOW: &str = "viewer";
+/// The keychain service Context's secrets are filed under.
+const KEYCHAIN_SERVICE: &str = "dev.context.app";
 
 const MENU_ENABLED: &str = "enabled";
 const MENU_SETTINGS: &str = "settings";
@@ -36,6 +45,9 @@ const MENU_QUIT: &str = "quit";
 /// Where dev mode saves context packs. `None` outside dev mode.
 struct Packs(Option<PathBuf>);
 
+/// The AI engine in use. (M5 adds a second one to choose from.)
+type ActiveEngine = Arc<dyn Engine>;
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(
@@ -43,12 +55,25 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             permission_status,
             request_permission,
             list_packs,
             load_pack,
-            open_viewer
+            open_viewer,
+            open_settings,
+            engine_status,
+            save_api_key,
+            remove_api_key,
+            effort_ceiling,
+            set_effort_ceiling,
+            popover_ask,
+            popover_go_deeper,
+            popover_set_effort,
+            popover_correct,
+            popover_close,
+            popover_sent
         ])
         .setup(|app| {
             // Menu bar only: no Dock icon, no app switcher entry.
@@ -56,39 +81,64 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let native = Arc::new(Native);
-            let lens = app
-                .get_webview_window(pointing::LENS_WINDOW)
-                .expect("the lens window is declared in tauri.conf.json");
-            if let Err(e) = native.configure_overlay(&lens) {
-                log::warn!("lens overlay unavailable: {e}");
+            for (label, kind) in [
+                (pointing::LENS_WINDOW, OverlayKind::Lens),
+                (popover::POPOVER_WINDOW, OverlayKind::Popover),
+            ] {
+                let window = app
+                    .get_webview_window(label)
+                    .expect("overlay windows are declared in tauri.conf.json");
+                if let Err(e) = native.configure_overlay(&window, kind) {
+                    log::warn!("{label} overlay unavailable: {e}");
+                }
             }
 
-            let settings = Settings::default();
-            let packs_dir = settings
-                .dev_mode
+            let settings = Arc::new(SettingsStore::load(
+                app.path().app_config_dir()?.join("settings.json"),
+            ));
+            let dev_mode = settings.get().dev_mode;
+            let packs_dir = dev_mode
                 .then(|| app.path().app_data_dir().map(|d| d.join("packs")))
                 .transpose()?;
-            let pointing = Pointing::start(
-                app.handle().clone(),
-                native.clone(),
+
+            let secrets = Arc::new(Secrets::new(Box::new(Keychain::new(KEYCHAIN_SERVICE))));
+            let engine: ActiveEngine =
+                Arc::new(AnthropicApi::new(engine_config()?, secrets.clone()));
+            let popover = Arc::new(Popover::new(app.handle().clone(), native.clone()));
+            let orchestrator = Arc::new(Orchestrator::new(
+                engine.clone(),
                 settings.clone(),
-                packs_dir.clone(),
-            );
+                popover.clone(),
+            ));
+
+            let pointing = Pointing::start(pointing::Parts {
+                app: app.handle().clone(),
+                native: native.clone(),
+                settings: settings.clone(),
+                popover: popover.clone(),
+                orchestrator: orchestrator.clone(),
+                packs_dir: packs_dir.clone(),
+            });
             if let Err(e) = native.start_input(pointing.clone()) {
                 log::warn!("input hooks unavailable: {e}");
             }
-            build_tray(app.handle(), pointing.clone(), settings.dev_mode)?;
+            build_tray(app.handle(), pointing.clone(), dev_mode)?;
 
             // First run, or a permission was taken away: show onboarding. Dev
             // builds always open Settings, as the menu-bar icon can hide
             // behind the notch.
-            if settings.dev_mode || !native.permission_status().all_granted() {
+            if dev_mode || !native.permission_status().all_granted() {
                 show_settings(app.handle());
             }
 
             app.manage(native);
             app.manage(pointing);
             app.manage(Packs(packs_dir));
+            app.manage(settings);
+            app.manage(secrets);
+            app.manage(engine);
+            app.manage(popover);
+            app.manage(orchestrator);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -109,6 +159,13 @@ pub fn run() {
         });
 }
 
+/// The Claude API engine's section of config/models.json.
+fn engine_config() -> Result<anthropic_api::Config, serde_json::Error> {
+    let models: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../config/models.json"))?;
+    serde_json::from_value(models[anthropic_api::ENGINE_ID].clone())
+}
+
 #[tauri::command]
 fn permission_status(native: State<'_, Arc<Native>>) -> PermissionStatus {
     native.permission_status()
@@ -117,15 +174,6 @@ fn permission_status(native: State<'_, Arc<Native>>) -> PermissionStatus {
 #[tauri::command]
 fn request_permission(native: State<'_, Arc<Native>>, which: Permission) {
     native.request_permission(which);
-}
-
-/// A saved pack with its images inline, for the dev viewer.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PackView {
-    pack: ContextPack,
-    lens_image_url: Option<String>,
-    window_image_url: Option<String>,
 }
 
 #[tauri::command]
@@ -140,11 +188,96 @@ fn list_packs(packs: State<'_, Packs>) -> Result<Vec<PackSummary>, String> {
 fn load_pack(packs: State<'_, Packs>, key: String) -> Result<PackView, String> {
     let dir = packs.0.as_ref().ok_or("dev mode is off")?;
     let pack = replay::load(dir, &key).map_err(|e| e.to_string())?;
-    Ok(PackView {
-        lens_image_url: pack.lens_image.as_ref().map(replay::data_url),
-        window_image_url: pack.window_image.as_ref().map(replay::data_url),
-        pack,
+    Ok(replay::view(&pack))
+}
+
+#[tauri::command]
+fn open_settings(app: AppHandle) {
+    show_settings(&app);
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineStatus {
+    info: EngineInfo,
+    readiness: Readiness,
+}
+
+#[tauri::command]
+async fn engine_status(engine: State<'_, ActiveEngine>) -> Result<EngineStatus, ()> {
+    Ok(EngineStatus {
+        info: engine.info(),
+        readiness: engine.check_ready().await,
     })
+}
+
+/// The key goes one way: from Settings into the keychain. Nothing sends it
+/// back to any window.
+#[tauri::command]
+fn save_api_key(
+    key: String,
+    secrets: State<'_, Arc<Secrets>>,
+    engine: State<'_, ActiveEngine>,
+) -> Result<(), String> {
+    secrets
+        .set(engine.info().id, &key)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_api_key(
+    secrets: State<'_, Arc<Secrets>>,
+    engine: State<'_, ActiveEngine>,
+) -> Result<(), String> {
+    secrets.delete(engine.info().id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn effort_ceiling(settings: State<'_, Arc<SettingsStore>>) -> Effort {
+    settings.get().effort_ceiling
+}
+
+#[tauri::command]
+fn set_effort_ceiling(
+    effort: Effort,
+    settings: State<'_, Arc<SettingsStore>>,
+) -> Result<(), String> {
+    settings
+        .update(|s| s.effort_ceiling = effort)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn popover_ask(question: String, orchestrator: State<'_, Arc<Orchestrator>>) {
+    orchestrator.ask(question);
+}
+
+#[tauri::command]
+fn popover_go_deeper(orchestrator: State<'_, Arc<Orchestrator>>) {
+    orchestrator.go_deeper();
+}
+
+#[tauri::command]
+fn popover_set_effort(effort: Effort, orchestrator: State<'_, Arc<Orchestrator>>) {
+    orchestrator.set_effort(effort);
+}
+
+#[tauri::command]
+fn popover_correct(target: String, orchestrator: State<'_, Arc<Orchestrator>>) {
+    orchestrator.correct_target(target);
+}
+
+#[tauri::command]
+fn popover_close(popover: State<'_, Arc<Popover>>, orchestrator: State<'_, Arc<Orchestrator>>) {
+    popover.close();
+    orchestrator.cancel();
+}
+
+/// "What was sent": the current conversation's context pack.
+#[tauri::command]
+fn popover_sent(orchestrator: State<'_, Arc<Orchestrator>>) -> Option<PackView> {
+    orchestrator.pack().map(|pack| replay::view(&pack))
 }
 
 /// Async, so the window isn't built while the main thread waits on the command.

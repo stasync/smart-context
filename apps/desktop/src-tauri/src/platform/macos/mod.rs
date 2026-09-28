@@ -13,8 +13,8 @@ use tauri::WebviewWindow;
 
 use super::{
     Accessibility, AppInfo, InputHandler, InputHooks, InspectOptions, Inspection, Overlay,
-    Permission, PermissionStatus, Permissions, Point, Rect, Result, ScreenCapture, Screens,
-    Screenshots, ShotLimits, WindowInfo,
+    OverlayKind, Permission, PermissionStatus, Permissions, Point, Rect, Result, ScreenCapture,
+    Screens, Screenshots, ShotLimits, WindowInfo,
 };
 
 /// The macOS platform layer.
@@ -59,6 +59,10 @@ impl Accessibility for Native {
 }
 
 impl ScreenCapture for Native {
+    fn prepare_screenshots(&self) {
+        capture::prepare();
+    }
+
     fn screenshots(
         &self,
         window: Option<&WindowInfo>,
@@ -70,12 +74,12 @@ impl ScreenCapture for Native {
 }
 
 impl Overlay for Native {
-    fn configure_overlay(&self, window: &WebviewWindow) -> Result<()> {
-        overlay::configure(window)
+    fn configure_overlay(&self, window: &WebviewWindow, kind: OverlayKind) -> Result<()> {
+        overlay::configure(window, kind)
     }
 
-    fn show_overlay(&self, window: &WebviewWindow, display: Rect) -> Result<()> {
-        overlay::show(window, display)
+    fn show_overlay(&self, window: &WebviewWindow, frame: Rect, focus: bool) -> Result<()> {
+        overlay::show(window, frame, focus)
     }
 
     fn hide_overlay(&self, window: &WebviewWindow) -> Result<()> {

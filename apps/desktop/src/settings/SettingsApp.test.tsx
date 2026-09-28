@@ -8,6 +8,8 @@ vi.mock("../shared/ipc", () => ({
   ),
   requestPermission: vi.fn(() => Promise.resolve()),
   openViewer: vi.fn(() => Promise.resolve()),
+  engineStatus: vi.fn(() => new Promise(() => {})),
+  effortCeiling: vi.fn(() => new Promise(() => {})),
 }));
 
 describe("SettingsApp", () => {

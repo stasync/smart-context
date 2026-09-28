@@ -7,8 +7,8 @@ use tauri::WebviewWindow;
 
 use super::{
     Accessibility, AppInfo, InputHandler, InputHooks, InspectOptions, Inspection, Overlay,
-    Permission, PermissionStatus, Permissions, PlatformError, Point, Rect, Result, ScreenCapture,
-    Screens, Screenshots, ShotLimits, WindowInfo,
+    OverlayKind, Permission, PermissionStatus, Permissions, PlatformError, Point, Rect, Result,
+    ScreenCapture, Screens, Screenshots, ShotLimits, WindowInfo,
 };
 
 /// The Windows platform layer.
@@ -55,6 +55,8 @@ impl Accessibility for Native {
 }
 
 impl ScreenCapture for Native {
+    fn prepare_screenshots(&self) {}
+
     fn screenshots(
         &self,
         _window: Option<&WindowInfo>,
@@ -66,11 +68,11 @@ impl ScreenCapture for Native {
 }
 
 impl Overlay for Native {
-    fn configure_overlay(&self, _window: &WebviewWindow) -> Result<()> {
+    fn configure_overlay(&self, _window: &WebviewWindow, _kind: OverlayKind) -> Result<()> {
         Err(PlatformError::NotSupported)
     }
 
-    fn show_overlay(&self, _window: &WebviewWindow, _display: Rect) -> Result<()> {
+    fn show_overlay(&self, _window: &WebviewWindow, _frame: Rect, _focus: bool) -> Result<()> {
         Err(PlatformError::NotSupported)
     }
 

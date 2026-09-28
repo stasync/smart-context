@@ -1,4 +1,5 @@
 import { openViewer, requestPermission } from "../shared/ipc";
+import { EngineSection } from "./EngineSection";
 import { PermissionsSection } from "./PermissionsSection";
 import { usePermissionStatus } from "./usePermissionStatus";
 
@@ -16,6 +17,7 @@ export function SettingsApp() {
         status={status}
         onRequest={(which) => void requestPermission(which)}
       />
+      <EngineSection />
       {import.meta.env.DEV && (
         <section aria-labelledby="dev-title">
           <h2 id="dev-title">Development</h2>

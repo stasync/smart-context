@@ -16,7 +16,7 @@
         "title": "Context Settings",
         "url": "settings.html",
         "width": 520,
-        "height": 400,
+        "height": 620,
         "center": true,
         "visible": false
       },
@@ -35,6 +35,23 @@
         "shadow": false,
         "resizable": false,
         "visibleOnAllWorkspaces": true,
+        "visible": false
+      },
+      {
+        "label": "popover",
+        "title": "Context",
+        "url": "popover.html",
+        "width": 440,
+        "height": 380,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "shadow": true,
+        "resizable": false,
+        "visibleOnAllWorkspaces": true,
+        "acceptFirstMouse": true,
         "visible": false
       }
     ],
