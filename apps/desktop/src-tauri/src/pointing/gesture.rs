@@ -68,6 +68,12 @@ impl Gesture {
     pub fn handle(&mut self, event: InputEvent, now: Instant) -> (Disposition, Option<Action>) {
         use Disposition::{Pass, Swallow};
 
+        if event == InputEvent::HooksStopped {
+            // Key-ups for swallowed keys may never come now.
+            self.swallowed.clear();
+            return (Pass, self.reset());
+        }
+
         match event {
             InputEvent::KeyUp(key) if self.forget_swallowed(key) => return (Swallow, None),
             InputEvent::KeyDown { key, repeat: true } if self.swallowed.contains(&key) => {
@@ -118,7 +124,9 @@ impl Gesture {
                     shift: false,
                 } => (Swallow, Some(Action::Resize(delta))),
                 InputEvent::Scroll { delta, shift: true } => (Swallow, Some(Action::Step(delta))),
-                InputEvent::HotkeyDown(_) | InputEvent::KeyUp(_) => (Pass, None),
+                InputEvent::HotkeyDown(_) | InputEvent::KeyUp(_) | InputEvent::HooksStopped => {
+                    (Pass, None)
+                }
             },
 
             State::Finished => {
@@ -229,6 +237,22 @@ mod tests {
         assert_eq!(out[3], (Pass, None));
         assert_eq!(out[4], (Swallow, None), "key-up after the hotkey's release");
         assert_eq!(out[5], (Pass, None), "a later Esc reaches the app");
+    }
+
+    #[test]
+    fn stopped_hooks_end_the_gesture() {
+        let out = run(&[
+            (0, InputEvent::HotkeyDown(CURSOR)),
+            (300, key_down(Key::Escape)),
+            (350, InputEvent::HooksStopped),
+            (400, InputEvent::KeyUp(Key::Escape)),
+            (500, InputEvent::HotkeyDown(CURSOR)),
+            (600, InputEvent::HooksStopped),
+        ]);
+        assert_eq!(out[2], (Pass, None), "already finished by Esc");
+        assert_eq!(out[3], (Pass, None), "nothing is swallowed afterwards");
+        assert_eq!(out[4], (Pass, Some(Action::Show(CURSOR))));
+        assert_eq!(out[5], (Pass, Some(Action::Cancel)), "hides the lens");
     }
 
     #[test]

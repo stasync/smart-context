@@ -265,6 +265,9 @@ pub enum InputEvent {
         delta: f64,
         shift: bool,
     },
+    /// The hooks stopped, say because Accessibility was turned off: any
+    /// gesture in progress is over. They start again once it's back.
+    HooksStopped,
 }
 
 /// What the input hook does with an event after the handler has seen it.
@@ -290,8 +293,8 @@ pub trait InputHooks {
     /// they need is missing, keeps retrying until it's granted.
     fn start_input(&self, handler: Arc<dyn InputHandler>) -> Result<()>;
 
-    /// How long the mouse has been still: no move, drag or scroll. None if
-    /// the OS can't say.
+    /// How long the mouse has been still: no move or drag. None if the OS
+    /// can't say.
     fn pointer_still_for(&self) -> Option<Duration>;
 }
 

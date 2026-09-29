@@ -358,12 +358,15 @@ pub trait Permissions {
 
 Each OS implements all the traits on one type, `platform::Native`. Swallowing is decided per event by the handler's return value, rather than by a `set_swallow_scroll` switch, so the gesture state machine alone decides what the app underneath sees.
 
-macOS input: use a `CGEventTap` at session level on a dedicated thread with its own `CFRunLoop`.
+macOS input: `CGEventTap`s at session level on a dedicated thread with its own `CFRunLoop`.
 
-- Listen for: `flagsChanged` (the modifier hotkey), `keyDown` (Space, Esc), `scrollWheel`, `mouseMoved`.
-- Return `NULL` from the callback to swallow scroll and Space/Esc events while the lens is up.
-- Re-enable the tap on `kCGEventTapDisabledByTimeout` or `ByUserInput`.
-- This needs the Accessibility permission.
+- An active tap for what may be swallowed: `flagsChanged` (the modifier hotkey), `keyDown`/`keyUp` (Space, Esc), `scrollWheel`. Return `NULL` from the callback to swallow scroll and Space/Esc events while the lens is up.
+- A listen-only tap for the mouse (`mouseMoved`, drags, button downs), which is never swallowed. A listen-only tap can't hold up input, so the mouse keeps working whatever happens to the active tap.
+- Both need the Accessibility permission.
+- An active tap sits in the path of every key press. If Accessibility is turned off while it runs, macOS disables it, and re-enabling it then leaves a dead tap that freezes all input until a restart. Other apps have hit this too (AltTab, Deskflow, uSwitch). So:
+  - On `kCGEventTapDisabledByTimeout` or `ByUserInput`, re-enable only if the permission is still there, and at most 5 times in 30 s (starting values). Otherwise take the taps down.
+  - A run-loop timer checks the permission every second while the taps run, and takes them down the moment it's gone. They go back up once it's granted again.
+  - `AXIsProcessTrusted` can keep answering yes after the switch is turned off, so the check also creates a probe tap and removes it at once. macOS refuses to create one without the permission. The permission status shown in Settings uses the same check.
 
 Threading:
 
@@ -603,7 +606,7 @@ Multiple windows:
 
 Pointing inside VS Code:
 
-- Editor: the extension's pointer gives the exact line and word. The app uses it only if the hover came after the mouse last moved or scrolled (`InputHooks::pointer_still_for`); otherwise the lens crop and the visible text have to pin down the line. Testing showed that at Low effort the model can misread the line from the images alone.
+- Editor: the extension's pointer gives the exact line and word. The app uses it only if the hover came after the mouse last moved (`InputHooks::pointer_still_for`; scrolling doesn't count, since it also resizes the lens and the extension reports the editor's own scrolling); otherwise the lens crop and the visible text have to pin down the line. Testing showed that at Low effort the model can misread the line from the images alone.
 - Explorer sidebar: accessibility gives the row's name, and the model resolves it with `list_dir` / `search_project`.
 
 Later (not MVP): publish to Open VSX so Cursor and VSCodium can use the same extension.
@@ -653,7 +656,7 @@ Each milestone ends with a demo the owner can run. Tick items as they're done.
 ### M1: Pointing
 
 - [x] Permissions onboarding: status checks for Accessibility and Screen Recording, buttons that open System Settings, re-check loop
-- [x] `CGEventTap` input thread: hold-to-show hotkey (default Right Option), Esc, Space, mouse move, scroll; re-enable on timeout
+- [x] `CGEventTap` input thread: hold-to-show hotkey (default Right Option), Esc, Space, mouse move, scroll; re-enable on timeout only while Accessibility is still granted (5.4)
 - [x] Accidental-trigger rule from section 14 (other key pressed while held, short taps)
 - [x] Lens overlay window: follows the cursor, click-through, all Spaces, above full-screen apps
 - [x] Scroll resizes the lens (swallowed); Shift+scroll reserved for M2
@@ -802,6 +805,7 @@ VS Code `package.json`, VS Code explorer folder, Amazon product, Linear or Jira 
 | Default answer language | The system language |
 | VS Code offers "Screen Reader Optimized" mode once Context switches on its accessibility tree | Keep switching it on (M2 needs VS Code's text). Tell users they can answer No, or set `editor.accessibilitySupport` to `off`. Since M4 the extension gives the editor's text and the word under the pointer, so accessibility matters less inside the editor; the sidebar and panels still need it. |
 | The menu-bar icon can hide behind the notch | Opening Context again shows Settings. A global shortcut for Settings is possible later. |
+| Signing personal builds. macOS ties a permission to the app's signature; an ad-hoc signed build (the default without an identity) gets a new one on every rebuild. System Settings then still shows Context switched on, but the new build isn't allowed. | Sign local release builds with a stable identity: a free Apple Development certificate (Xcode → Settings → Accounts) or a self-signed code-signing certificate, passed as `APPLE_SIGNING_IDENTITY`. Developer ID and notarization come in phase 4. Until then, after each rebuild: quit Context, remove its old entries from both permission lists, then grant them again. |
 
 ---
 
@@ -876,3 +880,9 @@ VS Code `package.json`, VS Code explorer folder, Amazon product, Linear or Jira 
 - 8: the extension's hover-provider pointer and the reconnect behavior (see 8).
 - Prompt changes: the eval runner (13.2) arrives in M6, so these were checked by hand on the express example rather than by the eval.
 - M4 findings: Haiku 4.5 at Low skipped the project tools even when told to always search, and it misread the target line from the images (it explained `zod` with the pointer on `express`). The pointer and the lookup address both.
+
+29 Sep 2026, permissions (after a whole-system freeze in the release build):
+
+- 5.4: the input tap as built. Turning Accessibility off while Context ran froze all input until a hard reset, because the tap re-enabled itself unconditionally. Now there are two taps (active for keys and scroll, listen-only for the mouse), re-enabling happens only after a permission check, a timer checks every second, and the taps come down when the permission goes. `InputEvent::HooksStopped` ends any gesture in progress.
+- 3.3: the Settings permission status uses the same check, since `AXIsProcessTrusted` can stay true after the switch is turned off.
+- 14: new open decision on signing personal builds. The release build was ad-hoc signed with a designated requirement of its exact hash, so every rebuild lost its permissions while System Settings still showed them on.

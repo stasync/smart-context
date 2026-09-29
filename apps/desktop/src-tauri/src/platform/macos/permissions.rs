@@ -1,9 +1,7 @@
 //! Accessibility and Screen Recording permissions.
 
 use objc2_app_kit::NSWorkspace;
-use objc2_application_services::{
-    AXIsProcessTrusted, AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt,
-};
+use objc2_application_services::{AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt};
 use objc2_core_foundation::{CFBoolean, CFDictionary};
 use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
 use objc2_foundation::{NSString, NSURL};
@@ -17,7 +15,9 @@ const SCREEN_RECORDING_PANE: &str =
 
 pub fn status() -> PermissionStatus {
     PermissionStatus {
-        accessibility: unsafe { AXIsProcessTrusted() },
+        // Not AXIsProcessTrusted alone: it can stay true after the switch
+        // is turned off.
+        accessibility: super::input::can_filter_events(),
         screen_recording: CGPreflightScreenCaptureAccess(),
     }
 }

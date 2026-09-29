@@ -37,6 +37,15 @@ For answers, paste a Claude API key into **Settings → AI engine** (create a de
 
 Context needs **Accessibility** and **Screen Recording** (Settings opens on launch until both are allowed). In development, macOS grants them to the terminal or editor that runs `npm run dev`, such as Terminal or VS Code, not to Context itself. After allowing Screen Recording, restart that app.
 
+Release builds (`npm run build`) get their own permissions, and macOS ties them to the app's signature. Without a signing identity the build is ad-hoc signed, and every rebuild counts as a new app: System Settings still shows Context switched on, but the new build isn't allowed. Either sign with a stable identity, such as a free Apple Development certificate from Xcode → Settings → Accounts:
+
+```sh
+security find-identity -v -p codesigning   # copy the identity's name
+APPLE_SIGNING_IDENTITY="Apple Development: …" npm run build
+```
+
+or, after each rebuild, quit Context, remove it from both permission lists (the − button), and allow it again.
+
 Pointing at VS Code switches on its accessibility tree, and VS Code may then offer "Screen Reader Optimized" mode. You can answer No (or set `editor.accessibilitySupport` to `off`).
 
 ### Code projects in VS Code

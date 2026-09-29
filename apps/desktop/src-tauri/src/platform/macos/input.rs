@@ -1,18 +1,29 @@
-//! Global input: a session-level CGEventTap on its own thread and run loop.
+//! Global input: session-level event taps on their own thread and run loop.
 //!
-//! The tap is active (not listen-only), so it can swallow the scroll, Space
-//! and Esc events pointing uses. It needs the Accessibility permission.
+//! Two taps: an active one for the keys and scrolling that pointing may
+//! swallow (the hotkey, Space, Esc, scroll), and a listen-only one for the
+//! mouse, which is never swallowed. Both need the Accessibility permission.
+//!
+//! An active tap sits in the path of every key press on the Mac. If
+//! Accessibility is turned off while it runs, macOS disables it, and turning
+//! it back on then leaves a dead tap in that path: all input stops until a
+//! restart. So a tap is re-enabled only after checking the permission, a
+//! timer checks it every second, and the taps come down the moment it's gone.
+//! They go back up once it's granted again.
 
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use objc2_application_services::AXIsProcessTrusted;
-use objc2_core_foundation::{CFMachPort, CFRetained, CFRunLoop, kCFRunLoopCommonModes};
+use objc2_core_foundation::{
+    CFAbsoluteTimeGetCurrent, CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource, CFRunLoopTimer,
+    CFRunLoopTimerContext, kCFRunLoopCommonModes,
+};
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventMask, CGEventSource, CGEventSourceStateID,
     CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType,
@@ -32,8 +43,15 @@ const KEY_RIGHT_OPTION: i64 = 0x3D;
 /// while the right Option key specifically is down.
 const DEVICE_RIGHT_OPTION: u64 = 0x40;
 
-/// How often to retry creating the tap while Accessibility isn't granted.
+/// How often to check Accessibility, both while waiting for it and while
+/// the taps run.
 const PERMISSION_POLL: Duration = Duration::from_secs(1);
+/// macOS disables a tap that answers too slowly. Turning it back on now and
+/// then is normal; a tap that keeps being disabled is taken down instead and
+/// put back after a pause.
+const MAX_REENABLES: u32 = 5;
+const REENABLE_WINDOW: Duration = Duration::from_secs(30);
+const COOL_DOWN: Duration = Duration::from_secs(10);
 
 pub fn start(handler: Arc<dyn InputHandler>) -> Result<()> {
     thread::Builder::new()
@@ -43,14 +61,54 @@ pub fn start(handler: Arc<dyn InputHandler>) -> Result<()> {
         .map_err(|e| PlatformError::Failed(format!("starting the input thread: {e}")))
 }
 
-/// Time since the last mouse move, drag or scroll, from any source.
+/// Whether this process may filter input events right now.
+/// `AXIsProcessTrusted` can go on saying yes after Accessibility is turned
+/// off, so this also creates a small active tap and removes it at once:
+/// macOS refuses to create one without the permission.
+pub fn can_filter_events() -> bool {
+    if !unsafe { AXIsProcessTrusted() } {
+        return false;
+    }
+    // SAFETY: `pass_through` matches CGEventTapCallBack and ignores its user
+    // info; the tap is never added to a run loop and is gone before returning.
+    let probe = unsafe {
+        CGEvent::tap_create(
+            CGEventTapLocation::SessionEventTap,
+            CGEventTapPlacement::TailAppendEventTap,
+            CGEventTapOptions::Default,
+            1 << CGEventType::KeyDown.0,
+            Some(pass_through),
+            ptr::null_mut(),
+        )
+    };
+    match probe {
+        Some(port) => {
+            CGEvent::tap_enable(&port, false);
+            port.invalidate();
+            true
+        }
+        None => false,
+    }
+}
+
+unsafe extern "C-unwind" fn pass_through(
+    _proxy: CGEventTapProxy,
+    _event_type: CGEventType,
+    event: NonNull<CGEvent>,
+    _user_info: *mut c_void,
+) -> *mut CGEvent {
+    event.as_ptr()
+}
+
+/// Time since the mouse last moved or dragged, from any source. Scrolling
+/// doesn't count: it also resizes the lens, and the editor reports its own
+/// scrolling.
 pub fn pointer_still_for() -> Duration {
     [
         CGEventType::MouseMoved,
         CGEventType::LeftMouseDragged,
         CGEventType::RightMouseDragged,
         CGEventType::OtherMouseDragged,
-        CGEventType::ScrollWheel,
     ]
     .into_iter()
     .map(|kind| {
@@ -65,67 +123,182 @@ pub fn pointer_still_for() -> Duration {
     .unwrap_or(Duration::MAX)
 }
 
-/// State the tap callback needs. Lives on the input thread for good.
+/// Why the taps came down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stop {
+    PermissionLost,
+    KeptDisabled,
+}
+
+/// State the callbacks need. Lives on the input thread for good.
 struct Tap {
     handler: Arc<dyn InputHandler>,
-    /// Set once the tap exists, so the callback can re-enable it.
-    port: OnceCell<CFRetained<CFMachPort>>,
+    run_loop: CFRetained<CFRunLoop>,
+    /// The taps and the permission timer, while they're up.
+    hooks: RefCell<Option<Hooks>>,
     hotkey_down: Cell<bool>,
+    /// Re-enables in the current window: when it started, and how many.
+    reenables: Cell<(Instant, u32)>,
+    stopped: Cell<Option<Stop>>,
 }
 
 fn run(handler: Arc<dyn InputHandler>) {
-    let tap = Box::new(Tap {
-        handler,
-        port: OnceCell::new(),
-        hotkey_down: Cell::new(false),
-    });
-    let user_info = ptr::from_ref::<Tap>(&tap).cast_mut().cast::<c_void>();
-
-    let port = loop {
-        // An active tap can only be created once Accessibility is granted.
-        if unsafe { AXIsProcessTrusted() } {
-            // SAFETY: `callback` matches CGEventTapCallBack, and `user_info`
-            // points at `tap`, which outlives the run loop below.
-            let port = unsafe {
-                CGEvent::tap_create(
-                    CGEventTapLocation::SessionEventTap,
-                    CGEventTapPlacement::HeadInsertEventTap,
-                    CGEventTapOptions::Default,
-                    event_mask(),
-                    Some(callback),
-                    user_info,
-                )
-            };
-            if let Some(port) = port {
-                break port;
-            }
-            log::warn!("couldn't create the input event tap; retrying");
-        }
-        thread::sleep(PERMISSION_POLL);
-    };
-
-    let Some(source) = CFMachPort::new_run_loop_source(None, Some(&port), 0) else {
-        log::error!("couldn't create a run loop source for the input event tap");
-        return;
-    };
     let Some(run_loop) = CFRunLoop::current() else {
         log::error!("the input thread has no run loop");
         return;
     };
-    run_loop.add_source(Some(&source), unsafe { kCFRunLoopCommonModes });
-    CGEvent::tap_enable(&port, true);
-    let _ = tap.port.set(port);
-    log::info!("input hooks started");
+    let tap = Box::new(Tap {
+        handler,
+        run_loop,
+        hooks: RefCell::default(),
+        hotkey_down: Cell::new(false),
+        reenables: Cell::new((Instant::now(), 0)),
+        stopped: Cell::new(None),
+    });
+    let info = ptr::from_ref::<Tap>(&tap).cast_mut().cast::<c_void>();
 
-    // Runs for the rest of the app's life, keeping `tap` alive.
-    CFRunLoop::run();
+    loop {
+        while !can_filter_events() {
+            thread::sleep(PERMISSION_POLL);
+        }
+        // SAFETY: `info` points at `tap`, which outlives every hook (this
+        // function never returns).
+        let Some(hooks) = (unsafe { Hooks::install(&tap.run_loop, info) }) else {
+            log::warn!("couldn't create the input event taps; retrying");
+            thread::sleep(PERMISSION_POLL);
+            continue;
+        };
+        *tap.hooks.borrow_mut() = Some(hooks);
+        tap.stopped.set(None);
+        log::info!("input hooks started");
+
+        // Until a callback finds the permission gone, or the taps unusable.
+        CFRunLoop::run();
+
+        if let Some(hooks) = tap.hooks.borrow_mut().take() {
+            hooks.uninstall(&tap.run_loop);
+        }
+        tap.hotkey_down.set(false);
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+            tap.handler.handle(InputEvent::HooksStopped)
+        }));
+        if tap.stopped.get() == Some(Stop::KeptDisabled) {
+            log::warn!(
+                "input hooks stopped: macOS kept disabling them; retrying in {} s",
+                COOL_DOWN.as_secs()
+            );
+            thread::sleep(COOL_DOWN);
+        } else {
+            log::warn!("input hooks stopped: Accessibility is off");
+        }
+    }
 }
 
-fn event_mask() -> CGEventMask {
-    [
+/// The installed taps with their run loop sources, and the permission timer.
+struct Hooks {
+    taps: Vec<(CFRetained<CFMachPort>, CFRetained<CFRunLoopSource>)>,
+    timer: CFRetained<CFRunLoopTimer>,
+}
+
+impl Hooks {
+    /// # Safety
+    ///
+    /// `info` must point at a `Tap` that outlives the hooks.
+    unsafe fn install(run_loop: &CFRunLoop, info: *mut c_void) -> Option<Self> {
+        let mut taps = Vec::new();
+        let kinds = [
+            (CGEventTapOptions::Default, filter_mask()),
+            (CGEventTapOptions::ListenOnly, listen_mask()),
+        ];
+        for (options, mask) in kinds {
+            // SAFETY: `callback` matches CGEventTapCallBack, and the caller
+            // guarantees `info`.
+            let port = unsafe {
+                CGEvent::tap_create(
+                    CGEventTapLocation::SessionEventTap,
+                    CGEventTapPlacement::HeadInsertEventTap,
+                    options,
+                    mask,
+                    Some(callback),
+                    info,
+                )
+            };
+            let source = port
+                .as_ref()
+                .and_then(|port| CFMachPort::new_run_loop_source(None, Some(port), 0));
+            let (Some(port), Some(source)) = (port, source) else {
+                remove_taps(&taps, run_loop);
+                return None;
+            };
+            run_loop.add_source(Some(&source), unsafe { kCFRunLoopCommonModes });
+            taps.push((port, source));
+        }
+
+        let seconds = PERMISSION_POLL.as_secs_f64();
+        let mut context = CFRunLoopTimerContext {
+            version: 0,
+            info,
+            retain: None,
+            release: None,
+            copyDescription: None,
+        };
+        // SAFETY: `check_permission` matches CFRunLoopTimerCallBack, and the
+        // context (copied by CoreFoundation) carries `info`.
+        let timer = unsafe {
+            CFRunLoopTimer::new(
+                None,
+                CFAbsoluteTimeGetCurrent() + seconds,
+                seconds,
+                0,
+                0,
+                Some(check_permission),
+                &mut context,
+            )
+        };
+        let Some(timer) = timer else {
+            remove_taps(&taps, run_loop);
+            return None;
+        };
+        run_loop.add_timer(Some(&timer), unsafe { kCFRunLoopCommonModes });
+        Some(Self { taps, timer })
+    }
+
+    fn set_enabled(&self, on: bool) {
+        for (port, _) in &self.taps {
+            CGEvent::tap_enable(port, on);
+        }
+    }
+
+    fn uninstall(self, run_loop: &CFRunLoop) {
+        self.timer.invalidate();
+        remove_taps(&self.taps, run_loop);
+    }
+}
+
+fn remove_taps(
+    taps: &[(CFRetained<CFMachPort>, CFRetained<CFRunLoopSource>)],
+    run_loop: &CFRunLoop,
+) {
+    for (port, source) in taps {
+        CGEvent::tap_enable(port, false);
+        run_loop.remove_source(Some(source), unsafe { kCFRunLoopCommonModes });
+        port.invalidate();
+    }
+}
+
+/// What the active tap may swallow.
+fn filter_mask() -> CGEventMask {
+    mask(&[
         CGEventType::FlagsChanged,
         CGEventType::KeyDown,
         CGEventType::KeyUp,
+        CGEventType::ScrollWheel,
+    ])
+}
+
+/// What pointing only watches.
+fn listen_mask() -> CGEventMask {
+    mask(&[
         CGEventType::MouseMoved,
         CGEventType::LeftMouseDragged,
         CGEventType::RightMouseDragged,
@@ -133,10 +306,19 @@ fn event_mask() -> CGEventMask {
         CGEventType::LeftMouseDown,
         CGEventType::RightMouseDown,
         CGEventType::OtherMouseDown,
-        CGEventType::ScrollWheel,
-    ]
-    .iter()
-    .fold(0, |mask, t| mask | 1 << t.0)
+    ])
+}
+
+fn mask(types: &[CGEventType]) -> CGEventMask {
+    types.iter().fold(0, |mask, t| mask | 1 << t.0)
+}
+
+unsafe extern "C-unwind" fn check_permission(_timer: *mut CFRunLoopTimer, info: *mut c_void) {
+    // SAFETY: `info` is the `Tap` owned by `run`, which never returns.
+    let tap = unsafe { &*info.cast::<Tap>() };
+    if !can_filter_events() {
+        tap.stop(Stop::PermissionLost);
+    }
 }
 
 unsafe extern "C-unwind" fn callback(
@@ -149,12 +331,20 @@ unsafe extern "C-unwind" fn callback(
     let tap = unsafe { &*user_info.cast::<Tap>() };
     let passthrough = event.as_ptr();
 
-    // macOS disables a tap that's too slow, or on some secure input. Turn it back on.
+    // macOS disabled a tap: it answered too slowly, or the permission is
+    // gone. Only in the first case may it be turned back on (module docs).
     if event_type == CGEventType::TapDisabledByTimeout
         || event_type == CGEventType::TapDisabledByUserInput
     {
-        if let Some(port) = tap.port.get() {
-            CGEvent::tap_enable(port, true);
+        if !can_filter_events() {
+            tap.stop(Stop::PermissionLost);
+        } else if tap.may_reenable() {
+            log::info!("macOS disabled an input tap ({event_type:?}); turning it back on");
+            if let Some(hooks) = &*tap.hooks.borrow() {
+                hooks.set_enabled(true);
+            }
+        } else {
+            tap.stop(Stop::KeptDisabled);
         }
         return passthrough;
     }
@@ -171,6 +361,28 @@ unsafe extern "C-unwind" fn callback(
 }
 
 impl Tap {
+    /// Turns the taps off at once, so they never hold up input, and ends the
+    /// run loop; `run` then removes them.
+    fn stop(&self, why: Stop) {
+        if let Some(hooks) = &*self.hooks.borrow() {
+            hooks.set_enabled(false);
+        }
+        self.stopped.set(Some(why));
+        self.run_loop.stop();
+    }
+
+    /// Counts a re-enable; false once there have been too many lately.
+    fn may_reenable(&self) -> bool {
+        let (since, count) = self.reenables.get();
+        let (since, count) = if since.elapsed() > REENABLE_WINDOW {
+            (Instant::now(), 0)
+        } else {
+            (since, count)
+        };
+        self.reenables.set((since, count + 1));
+        count < MAX_REENABLES
+    }
+
     fn dispatch(&self, event_type: CGEventType, event: &CGEvent) -> Disposition {
         let flags = CGEvent::flags(Some(event)).bits();
 
